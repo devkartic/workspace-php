@@ -1,0 +1,129 @@
+services:
+
+  traefik:
+    image: traefik:v3.1
+
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik:/etc/traefik:ro
+      - ./certs:/certs:ro
+
+    networks:
+      - app_network
+
+  mariadb:
+    image: mariadb:11.2
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./data/mariadb:/var/lib/mysql
+    networks:
+      - app_network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+    environment:
+      PMA_HOST: mariadb
+      PMA_PORT: 3306
+    ports:
+      - "8081:80"
+    networks:
+      - app_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - app_network
+
+  mailpit:
+    image: axllent/mailpit
+    container_name: mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - app_network
+
+  dashboard:
+    build:
+      context: ./php
+      args:
+        PHP_VERSION: "7.4"
+
+    container_name: dashboard-php74
+    restart: unless-stopped
+    working_dir: /var/www/html
+
+    volumes:
+      - ../projects/dashboard:/var/www/html
+      # Optional project-specific PHP settings
+      - ../projects/dashboard/docker/php.ini:/usr/local/etc/php/conf.d/project.ini
+
+    labels:
+    - "traefik.enable=true"
+    - "traefik.http.routers.dashboard.rule=Host(`dashboard.local`)"
+    - "traefik.http.routers.dashboard.entrypoints=websecure"
+    - "traefik.http.routers.dashboard.tls=true"
+    - "traefik.http.services.dashboard.loadbalancer.server.port=80"
+
+    depends_on:
+      - mariadb
+      - redis
+
+    networks:
+      - app_network
+
+  website84:
+    build:
+      context: ./php
+      args:
+        PHP_VERSION: "8.4"
+
+    container_name: website-php84
+    restart: unless-stopped
+    working_dir: /var/www/html
+
+    volumes:
+      - ../projects/website-php84:/var/www/html
+      # Optional project-specific PHP settings
+      - ../projects/website-php84/docker/php.ini:/usr/local/etc/php/conf.d/project.ini
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.website84.rule=Host(`website84.local`)"
+      - "traefik.http.routers.website84.entrypoints=websecure"
+      - "traefik.http.routers.website84.tls=true"
+      - "traefik.http.services.website84.loadbalancer.server.port=80"
+
+    depends_on:
+      - mariadb
+      - redis
+
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
