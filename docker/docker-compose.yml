@@ -1,129 +1,89 @@
+name: ${COMPOSE_PROJECT_NAME:-php-workspace}
+
 services:
-
-  traefik:
-    image: traefik:v3.1
-
-    command:
-      - "--configFile=/etc/traefik/traefik.yml"
+  # Project-specific PHP-FPM services and Nginx source mounts are generated in
+  # docker/generated/projects.compose.yml from projects/*/.env.
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"
-
+      - "${NGINX_HTTP_PORT:-80}:80"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik:/etc/traefik:ro
-      - ./certs:/certs:ro
-
+      - ./nginx/base.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/generated:/etc/nginx/conf.d/generated:ro
     networks:
       - app_network
 
-  mariadb:
-    image: mariadb:11.2
-    container_name: mariadb
+  mysql:
+    image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT:-3306}:3306"
     volumes:
-      - ./data/mariadb:/var/lib/mysql
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - app_network
 
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin
-    container_name: phpmyadmin
-    restart: unless-stopped
+  database-init:
+    # Runs on demand from `make up` so newly registered projects receive their
+    # database even when MySQL's persistent volume already exists.
+    image: mysql:8.4
+    profiles: ["init"]
+    restart: "no"
+    environment:
+      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:-root}
+    volumes:
+      - ./generated/databases.sql:/work/databases.sql:ro
+    entrypoint: ["sh", "-ec", "mysql -h mysql -uroot < /work/databases.sql"]
     depends_on:
-      - mariadb
-    environment:
-      PMA_HOST: mariadb
-      PMA_PORT: 3306
-    ports:
-      - "8081:80"
+      mysql:
+        condition: service_healthy
     networks:
       - app_network
 
   redis:
+    # Shared cache/queue endpoint. Applications use redis:6379 internally;
+    # REDIS_PORT controls only the optional host-side port.
     image: redis:7-alpine
-    container_name: redis
     restart: unless-stopped
+    command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6380}:6379"
     volumes:
       - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - app_network
 
-  mailpit:
-    image: axllent/mailpit
-    container_name: mailpit
+  phpmyadmin:
+    image: phpmyadmin:5-apache
+    profiles: ["tools"]
     restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
     ports:
-      - "1025:1025"
-      - "8025:8025"
-    networks:
-      - app_network
-
-  dashboard:
-    build:
-      context: ./php
-      args:
-        PHP_VERSION: "7.4"
-
-    container_name: dashboard-php74
-    restart: unless-stopped
-    working_dir: /var/www/html
-
-    volumes:
-      - ../projects/dashboard:/var/www/html
-      # Optional project-specific PHP settings
-      - ../projects/dashboard/docker/php.ini:/usr/local/etc/php/conf.d/project.ini
-
-    labels:
-    - "traefik.enable=true"
-    - "traefik.http.routers.dashboard.rule=Host(`dashboard.local`)"
-    - "traefik.http.routers.dashboard.entrypoints=websecure"
-    - "traefik.http.routers.dashboard.tls=true"
-    - "traefik.http.services.dashboard.loadbalancer.server.port=80"
-
+      - "${PHPMYADMIN_PORT:-8081}:80"
     depends_on:
-      - mariadb
-      - redis
-
-    networks:
-      - app_network
-
-  website84:
-    build:
-      context: ./php
-      args:
-        PHP_VERSION: "8.4"
-
-    container_name: website-php84
-    restart: unless-stopped
-    working_dir: /var/www/html
-
-    volumes:
-      - ../projects/website-php84:/var/www/html
-      # Optional project-specific PHP settings
-      - ../projects/website-php84/docker/php.ini:/usr/local/etc/php/conf.d/project.ini
-
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.website84.rule=Host(`website84.local`)"
-      - "traefik.http.routers.website84.entrypoints=websecure"
-      - "traefik.http.routers.website84.tls=true"
-      - "traefik.http.services.website84.loadbalancer.server.port=80"
-
-    depends_on:
-      - mariadb
-      - redis
-
+      mysql:
+        condition: service_healthy
     networks:
       - app_network
 
 networks:
   app_network:
     driver: bridge
+
+volumes:
+  mysql_data:

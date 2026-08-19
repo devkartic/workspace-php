@@ -1,4 +1,0 @@
-tls:
-  certificates:
-    - certFile: /certs/dashboard.local+1.pem
-      keyFile: /certs/dashboard.local+1-key.pem

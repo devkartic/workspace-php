@@ -1,0 +1,6 @@
+# Local Docker settings (copy docker/.env.example to create this file)
+docker/.env
+docker/generated/projects.compose.yml
+docker/generated/databases.sql
+docker/nginx/generated/
+projects/*/dev/logs/*.log
