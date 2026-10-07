@@ -1,0 +1,219 @@
+"""Regression checks that never start containers or modify real project data."""
+import os
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+SOURCE = Path(__file__).resolve().parents[1]
+
+
+class WorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="php-workspace-test-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        for item in (
+            "scripts/projects", "scripts/workspace", "Makefile", "docker/docker-compose.yml",
+            "docker/.env.example", "docker/nginx/base.conf",
+            "projects/dashboard/project.env", "projects/dashboard/dev/php.ini",
+        ):
+            target = self.root / item
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SOURCE / item, target)
+        (self.root / "docker/php").mkdir()
+
+    def run_command(self, *args, success=True, env=None):
+        result = subprocess.run(args, cwd=self.root, env=env, text=True,
+                                capture_output=True)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def snapshot(self):
+        paths = list((self.root / "docker/nginx/generated").glob("*.conf"))
+        paths += [self.root / "docker/generated/projects.compose.yml",
+                  self.root / "docker/generated/databases.sql"]
+        return {str(p.relative_to(self.root)): p.read_bytes() for p in paths}
+
+    def test_external_source_and_environment_are_preserved(self):
+        app = self.root / "external/customer's app"
+        app.mkdir(parents=True)
+        (app / ".env").write_text("APPLICATION_SECRET=untouched\n")
+        result = self.run_command("./scripts/projects", "add", "external",
+                                  str(app), "8.3", "external.local", "external")
+        self.assertIn("Added external.", result.stdout)
+        self.assertEqual((app / ".env").read_text(), "APPLICATION_SECRET=untouched\n")
+        self.assertTrue((self.root / "projects/external/project.env").exists())
+        self.assertIn("external", self.run_command("./scripts/projects", "list").stdout)
+        config = self.run_command(
+            "docker", "compose", "--env-file", "docker/.env.example",
+            "-f", "docker/docker-compose.yml",
+            "-f", "docker/generated/projects.compose.yml", "config", "--format", "json")
+        services = json.loads(config.stdout)["services"]
+        self.assertEqual(Path(services["external"]["volumes"][0]["source"]).resolve(),
+                         app.resolve())
+
+    def test_failed_definition_preserves_all_generated_files(self):
+        self.run_command("./scripts/projects", "sync")
+        before = self.snapshot()
+        bad = self.root / "projects/zbad"
+        bad.mkdir()
+        (bad / "project.env").write_text(
+            "PROJECT_NAME=zbad\nPROJECT_PATH=projects/zbad\n"
+            "PHP_VERSION=9.9\nHOSTNAME=zbad.local\nDATABASE=zbad\n")
+        self.run_command("./scripts/projects", "sync", success=False)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(list((self.root / "docker/generated").glob(".sync.*")), [])
+
+    def test_compose_failure_rolls_back_registration_and_preserves_config(self):
+        self.run_command("./scripts/projects", "sync")
+        before = self.snapshot()
+        compose = self.root / "docker/docker-compose.yml"
+        compose.write_text(compose.read_text() + "\nunsupported_property: true\n")
+        app = self.root / "external/app"
+        app.mkdir(parents=True)
+        self.run_command("./scripts/projects", "add", "external", str(app),
+                         "8.3", "external.local", "external", success=False)
+        self.assertFalse((self.root / "projects/external/project.env").exists())
+        self.assertEqual(self.snapshot(), before)
+
+    def test_removing_project_removes_stale_configuration(self):
+        self.run_command("./scripts/projects", "sync")
+        (self.root / "projects/dashboard/project.env").unlink()
+        self.run_command("./scripts/projects", "sync")
+        self.assertEqual(list((self.root / "docker/nginx/generated").glob("*.conf")), [])
+        self.assertEqual((self.root / "docker/generated/projects.compose.yml").read_text(),
+                         "services: {}\n")
+
+    def test_mariadb_shell_uses_container_credentials(self):
+        mock_bin = self.root / "bin"
+        mock_bin.mkdir()
+        docker = mock_bin / "docker"
+        docker.write_text(
+            '#!/bin/sh\nwhile [ "$1" != exec ]; do shift; done\n'
+            'shift\n[ "$1" = mariadb ] || exit 1\nshift\n'
+            'export MARIADB_ROOT_PASSWORD="container password with $ and spaces"\n'
+            'exec "$@"\n')
+        mariadb = mock_bin / "mariadb"
+        mariadb.write_text('#!/bin/sh\nprintf "%s" "$MYSQL_PWD" > password-used\n')
+        docker.chmod(0o755)
+        mariadb.chmod(0o755)
+        env = dict(os.environ, PATH=str(mock_bin) + os.pathsep + os.environ["PATH"],
+                   MARIADB_ROOT_PASSWORD="incorrect-host-password")
+        self.run_command("make", "mariadb", env=env)
+        self.assertEqual((self.root / "password-used").read_text(),
+                         "container password with $ and spaces")
+
+    def test_dashboard_reports_runtime_without_exposing_configuration(self):
+        shutil.copy2(SOURCE / "projects/dashboard/index.php",
+                     self.root / "projects/dashboard/index.php")
+        result = self.run_command(
+            "php", "-r", '$_SERVER["DOCUMENT_ROOT"] = "/var/www/projects/dashboard"; '
+            'require "projects/dashboard/index.php";')
+        self.assertIn("PHP version:", result.stdout)
+        self.assertNotIn("phpinfo()", result.stdout)
+        self.assertNotIn("Failed opening", result.stdout + result.stderr)
+
+    def test_creation_requires_only_name_and_version(self):
+        self.run_command("make", "project-add", "NAME=my_app", "PHP=8.4")
+        project = self.root / "projects/my_app"
+        self.assertIn("PHP_VERSION=8.4", (project / "project.env").read_text())
+        self.assertIn("HOSTNAME=my-app.local", (project / "project.env").read_text())
+        self.assertIn("DB_DATABASE=my_app", (project / ".env").read_text())
+        self.assertTrue((project / ".env.example").exists())
+        result = self.run_command("php", str(project / "index.php"))
+        self.assertIn("my_app is running", result.stdout)
+        self.run_command("./scripts/projects", "check", "my_app")
+        self.run_command("./scripts/projects", "check", "missing", success=False)
+
+    def test_existing_application_environment_and_code_are_preserved(self):
+        project = self.root / "projects/existing"
+        project.mkdir()
+        (project / ".env").write_text("APPLICATION_SECRET=untouched\n")
+        (project / "index.php").write_text("<?php echo 'existing code';\n")
+        self.run_command("make", "project-add", "NAME=existing", "PHP=8.3")
+        self.assertEqual((project / ".env").read_text(), "APPLICATION_SECRET=untouched\n")
+        self.assertEqual((project / "index.php").read_text(), "<?php echo 'existing code';\n")
+
+    def test_ini_mount_is_optional_and_project_specific(self):
+        self.run_command("make", "project-add", "NAME=api", "PHP=8.4")
+        def services():
+            return json.loads(self.run_command(
+                "docker", "compose", "--env-file", "docker/.env.example",
+                "-f", "docker/docker-compose.yml", "-f",
+                "docker/generated/projects.compose.yml", "config", "--format", "json"
+            ).stdout)["services"]
+        self.assertEqual(len(services()["api"]["volumes"]), 1)
+        dev = self.root / "projects/api/dev"
+        dev.mkdir()
+        (dev / "php.ini").write_text("memory_limit = 256M\n")
+        self.run_command("./scripts/projects", "sync")
+        config = services()
+        override = config["api"]["volumes"][1]
+        self.assertEqual(Path(override["source"]).resolve(), (dev / "php.ini").resolve())
+        self.assertEqual(override["target"], "/usr/local/etc/php/conf.d/zz-project.ini")
+        self.assertTrue(override["read_only"])
+        self.assertEqual(config["dashboard"]["build"]["args"]["PHP_VERSION"], "7.4")
+        self.assertEqual(config["api"]["build"]["args"]["PHP_VERSION"], "8.4")
+
+    def test_public_document_root_maps_nginx_and_php_to_same_file(self):
+        self.run_command("make", "project-add", "NAME=web", "PHP=8.4",
+                         "DOCUMENT_ROOT=public")
+        project = self.root / "projects/web"
+        self.assertTrue((project / "public/index.php").is_file())
+        self.assertFalse((project / "index.php").exists())
+        config = (self.root / "docker/nginx/generated/web.conf").read_text()
+        self.assertIn("root /var/www/projects/web/public;", config)
+        self.assertIn("SCRIPT_FILENAME /var/www/html/public$fastcgi_script_name;", config)
+        self.assertIn("DOCUMENT_ROOT /var/www/html/public;", config)
+
+    def test_invalid_document_root_and_duplicate_host_preserve_configuration(self):
+        self.run_command("./scripts/projects", "sync")
+        before = self.snapshot()
+        (self.root / "projects/web").mkdir()
+        for document_root in ("../outside", "/public", "public;", "missing"):
+            self.run_command("make", "project-add", "NAME=web", "PHP=8.4",
+                             "DOCUMENT_ROOT=" + document_root, success=False)
+            self.assertEqual(self.snapshot(), before)
+            self.assertFalse((self.root / "projects/web/project.env").exists())
+        self.run_command("make", "project-add", "NAME=web", "PHP=8.4",
+                         "HOST=dashboard.local", success=False)
+        self.assertEqual(self.snapshot(), before)
+        for name, host, document_root in (
+            ("web\nbad", "web.local", "."),
+            ("web", "web.local\nbad", "."),
+            ("web", "web.local", "public\nbad"),
+        ):
+            self.run_command("./scripts/projects", "add", name, "projects/web",
+                             "8.4", host, "web", document_root, success=False)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_setup_preserves_local_configuration_and_checks_daemon(self):
+        mock_bin = self.root / "bin"
+        mock_bin.mkdir()
+        docker = mock_bin / "docker"
+        real_docker = shutil.which("docker")
+        # Only daemon access is mocked; generation still uses real Compose validation.
+        docker.write_text('#!/bin/sh\nif [ "$1" = info ]; then exit "${DOCKER_STATUS:-0}"; fi\n'
+                          'exec "' + real_docker + '" "$@"\n')
+        docker.chmod(0o755)
+        env = dict(os.environ, PATH=str(mock_bin) + os.pathsep + os.environ["PATH"])
+        self.run_command("make", "setup", env=env)
+        local_env = self.root / "docker/.env"
+        local_env.write_text(local_env.read_text().replace("NGINX_HTTP_PORT=80", "NGINX_HTTP_PORT=8090"))
+        before = local_env.read_bytes()
+        self.run_command("make", "setup", env=env)
+        self.assertEqual(local_env.read_bytes(), before)
+        env["DOCKER_STATUS"] = "1"
+        result = self.run_command("make", "doctor", env=env, success=False)
+        self.assertIn("Cannot reach Docker", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

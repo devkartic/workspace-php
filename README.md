@@ -1,39 +1,109 @@
-# PHP development stack
+# PHP Development Workspace
 
-This workspace runs any number of PHP applications behind Nginx. Each project independently selects PHP-FPM 7.4, 8.1, 8.3, or 8.4, while sharing MySQL 8.4 and Redis 7.
+A Docker workspace for running multiple PHP applications side by side. Each application gets its own PHP-FPM container, PHP version, hostname, and database. Nginx, MariaDB, and Redis are shared.
+
+Use it to start a small PHP project, register an existing application, or work on projects that require different PHP versions.
+
+## Requirements
+
+- Docker Engine with Docker Compose v2, or Docker Desktop, running locally.
+- Make and a POSIX shell. Commands below assume macOS, Linux, or a Linux shell in WSL.
+- Available host ports: HTTP `80`, MariaDB `3306`, Redis `6380`, and optional phpMyAdmin `8081`. Configure alternatives in `docker/.env`.
+- For regression tests only: Python 3 and a local PHP CLI.
+
+PHP and Composer run inside containers; you do not need to install them locally for development. Initial image builds require internet access.
 
 ## Quick start
 
-```sh
-cp docker/.env.example docker/.env
-make up
-```
-
-## Add a project
-
-From the workspace root, create the project directory and run this command:
+Run from the repository root:
 
 ```sh
-mkdir -p projects/api
-make project-add NAME=api PROJECT_PATH=projects/api PHP=8.3 HOST=api.local DB=api
+make setup
+make project-add NAME=myapp PHP=8.4
+make project-up NAME=myapp
 ```
 
-This creates `projects/api/.env`. Then add `127.0.0.1 api.local` to your hosts file and run `make up`. The shared MySQL server creates the `api` database automatically.
+`make setup` checks tools and Docker access, copies `docker/.env.example` only when `docker/.env` is missing, and generates validated configuration. It does not start containers.
 
-The included sample project is available at:
+Add this entry to your hosts file (`/etc/hosts` on macOS/Linux):
 
 ```text
-http://dashboard.local
+127.0.0.1 myapp.local
 ```
 
-Useful commands: `make project-list`, `make up`, `make down`, `make logs`, `make shell PROJECT=api`, `make mysql`, and `make redis-cli`. Redis is exposed on host port `6380` by default (container port `6379`); change `REDIS_PORT` in `docker/.env` if needed. `make down` keeps MySQL and Redis data.
+Open **http://myapp.local**. To check routing without editing your hosts file:
 
-## Project settings
+```sh
+curl -H 'Host: myapp.local' http://127.0.0.1/
+```
 
-Every project uses shared settings in `docker/php/php.ini`. To override them, create `projects/<project>/dev/php.ini`, then run `make sync` or `make up`; it is mounted last as `zz-project.ini`.
+Use the configured HTTP port in the URL when it differs from `80`. To start the included examples instead, run `make setup` and `make up`: `dashboard.local` uses PHP 7.4 and `php84.local` uses PHP 8.4.
 
-Project definitions live at the project root in `projects/<project>/.env`. They are the reusable source of truth and are safe to edit directly. Run `make sync` after editing one to regenerate the ignored Compose, Nginx, and database setup files.
+## Register an existing application
 
-PHP errors are saved to `projects/<project>/dev/logs/php-error.log` when the project's `dev/php.ini` sets `log_errors = On` and an `error_log` path, as the sample dashboard does.
+For an application whose entry point is `public/index.php`:
 
-The existing MariaDB files in `docker/data/mariadb` are deliberately not mounted by MySQL because their on-disk formats are incompatible. They remain untouched; use a logical dump to migrate any data you need.
+```sh
+make project-add NAME=api PHP=8.4 \
+  PROJECT_PATH=/absolute/path/to/api DOCUMENT_ROOT=public
+make project-up NAME=api
+make shell PROJECT=api
+# Inside the container:
+composer install
+```
+
+Source files and existing application environment files are preserved. Registration supplies infrastructure connections; configure your application's credentials and run its own setup commands as described in [the project guide](PROJECT_GUIDE.md).
+
+## Everyday commands
+
+| Command | Action |
+| --- | --- |
+| `make help` | Show available commands |
+| `make setup` / `make doctor` | Initialize configuration / check prerequisites |
+| `make project-add NAME=api PHP=8.4` | Create or register a project |
+| `make project-up NAME=api` | Build/start one project and shared services; create missing databases |
+| `make project-restart NAME=api` | Recreate one PHP container to apply ini settings |
+| `make project-list` | List registered projects |
+| `make shell PROJECT=api` | Open a shell for Composer, PHP, and application commands |
+| `make up` / `make down` | Start all projects / stop the stack while retaining data |
+| `make ps` / `make logs` | Show service status / follow logs |
+| `make tools` | Start phpMyAdmin at http://localhost:8081 |
+| `make mariadb` / `make redis-cli` | Open database/cache clients |
+| `make sync` / `make validate` | Generate configuration / validate Compose |
+| `make test` | Run isolated regression tests without starting containers |
+
+## How the workspace fits together
+
+```text
+Browser → Nginx → project PHP-FPM container
+                       ├── MariaDB: project database
+                       └── Redis: shared cache/queues
+```
+
+```text
+.
+├── Makefile                      Developer commands
+├── scripts/
+│   ├── workspace                 Setup and prerequisite checks
+│   └── projects                  Registration and configuration generation
+├── docker/
+│   ├── .env.example              Local infrastructure settings template
+│   ├── docker-compose.yml        Shared services and optional tools
+│   ├── php/                      PHP image recipe and shared ini defaults
+│   └── nginx/base.conf           Shared routing and Docker DNS configuration
+├── projects/<name>/
+│   ├── project.env               Committed workspace registration
+│   ├── .env.example              Safe application environment template
+│   ├── dev/php.ini               Optional project PHP settings
+│   └── …                         Application source
+└── tests/test_workspace.py       Configuration and preservation checks
+```
+
+Generated Compose, Nginx, and SQL files are ignored by Git. MariaDB persists in a Docker volume; Redis persists in `docker/data/redis`. Local `.env` files, backups, and IDE settings are also ignored.
+
+## Further reading
+
+- [Project guide](PROJECT_GUIDE.md): configuration, framework setup, daily work, troubleshooting, and data recovery.
+- [Code review](docs/CODE_REVIEW.md): reviewed files, resolved issues, validation, and remaining limitations.
+
+This workspace is configured for local development with HTTP and PHP error display enabled. Database credentials and Redis are shared across projects. Node tooling, HTTPS, application workers, and application-specific migrations are configured separately when needed.

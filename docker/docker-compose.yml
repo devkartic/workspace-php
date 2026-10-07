@@ -2,7 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-php-workspace}
 
 services:
   # Project-specific PHP-FPM services and Nginx source mounts are generated in
-  # docker/generated/projects.compose.yml from projects/*/.env.
+  # docker/generated/projects.compose.yml from projects/*/project.env.
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -14,17 +14,18 @@ services:
     networks:
       - app_network
 
-  mysql:
-    image: mysql:8.4
+  mariadb:
+    # A separate volume protects the old MySQL data and avoids mixing storage formats.
+    image: mariadb:11.4
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-root}
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${MARIADB_PORT:-3306}:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mariadb_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -33,17 +34,17 @@ services:
 
   database-init:
     # Runs on demand from `make up` so newly registered projects receive their
-    # database even when MySQL's persistent volume already exists.
-    image: mysql:8.4
+    # database even when MariaDB's persistent volume already exists.
+    image: mariadb:11.4
     profiles: ["init"]
     restart: "no"
     environment:
-      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_PWD: ${MARIADB_ROOT_PASSWORD:-root}
     volumes:
       - ./generated/databases.sql:/work/databases.sql:ro
-    entrypoint: ["sh", "-ec", "mysql -h mysql -uroot < /work/databases.sql"]
+    entrypoint: ["sh", "-ec", "mariadb -h mariadb -uroot < /work/databases.sql"]
     depends_on:
-      mysql:
+      mariadb:
         condition: service_healthy
     networks:
       - app_network
@@ -71,12 +72,12 @@ services:
     profiles: ["tools"]
     restart: unless-stopped
     environment:
-      PMA_HOST: mysql
+      PMA_HOST: mariadb
       PMA_PORT: 3306
     ports:
       - "${PHPMYADMIN_PORT:-8081}:80"
     depends_on:
-      mysql:
+      mariadb:
         condition: service_healthy
     networks:
       - app_network
@@ -86,4 +87,4 @@ networks:
     driver: bridge
 
 volumes:
-  mysql_data:
+  mariadb_data:

@@ -1,6 +1,19 @@
 # Local Docker settings (copy docker/.env.example to create this file)
 docker/.env
-docker/generated/projects.compose.yml
-docker/generated/databases.sql
+docker/generated/
 docker/nginx/generated/
 projects/*/dev/logs/*.log
+
+# Local database/cache state and macOS metadata
+docker/data/
+docker/backups/
+.DS_Store
+__pycache__/
+.idea/
+# Each application's environment may contain credentials; commit its example only.
+projects/**/.env
+# Reinstall application dependencies from their committed lockfiles.
+projects/**/vendor/
+projects/**/node_modules/
+
+projects/blog-portfolio

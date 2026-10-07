@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+doctor() {
+  for tool in docker make; do
+    command -v "$tool" >/dev/null 2>&1 || die "Missing required tool: $tool"
+  done
+  docker compose version >/dev/null 2>&1 || die 'Docker Compose v2 is required.'
+  docker info >/dev/null 2>&1 || die 'Cannot reach Docker. Start Docker Desktop or your Docker Engine and check socket permissions.'
+  printf '%s\n' 'Required tools and Docker daemon are available.'
+  if ! command -v python3 >/dev/null 2>&1 || ! command -v php >/dev/null 2>&1; then
+    printf '%s\n' 'Optional: install Python 3 and a local PHP CLI to run make test.'
+  fi
+}
+
+case "${1:-doctor}" in
+  doctor) doctor ;;
+  setup)
+    doctor
+    if [ ! -e "$root/docker/.env" ]; then
+      cp "$root/docker/.env.example" "$root/docker/.env"
+      printf '%s\n' 'Created docker/.env. Review local ports and database credentials.'
+    fi
+    "$root/scripts/projects" sync
+    printf '%s\n' 'Setup complete. Run make up, or make project-add NAME=api PHP=8.4 followed by make project-up NAME=api.'
+    ;;
+  *) die 'Usage: scripts/workspace {doctor|setup}' ;;
+esac
