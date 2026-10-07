@@ -15,5 +15,3 @@ projects/**/.env
 # Reinstall application dependencies from their committed lockfiles.
 projects/**/vendor/
 projects/**/node_modules/
-
-projects/blog-portfolio
