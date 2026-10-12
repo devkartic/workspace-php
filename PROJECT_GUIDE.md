@@ -10,7 +10,7 @@ Install the requirements listed in [README.md](README.md), start Docker, and run
 make setup
 ```
 
-Setup checks Docker, Compose, Make, and daemon access. It preserves an existing `docker/.env`, creates one from the example when missing, and generates configuration from every registration under `docker/projects/*.env`. Missing application `.env.example` and `.env` files are also created; existing ones are preserved.
+Setup checks Docker, Compose, Make, and daemon access. It preserves an existing `docker/.env`, creates one from the example when missing, and generates configuration from `projects/*/.env`. A missing `.env` is copied from the project’s `.env.example`; existing `.env` files take priority and are preserved.
 
 Review `docker/.env` before starting containers:
 
@@ -60,26 +60,25 @@ make project-add NAME=api PHP=8.4 \
   DOCUMENT_ROOT=public HOST=api.local DB=api
 ```
 
-Custom source paths must already exist, and an existing application's document root must exist. Quote paths containing spaces. Registration lives under `docker/projects/*.env`; external and nested applications use a Docker registration file without changing their own environment files. For new projects, the generator creates the chosen web directory. `DOCUMENT_ROOT` accepts `.` or relative segments such as `public` and `web/public`; absolute paths and traversal are rejected.
+Custom source paths must already exist, and an existing application's document root must exist. Quote paths containing spaces. Registration is stored in the application’s `.env` alongside its Laravel settings. Existing values are preserved and missing workspace fields are appended. External and nested applications are linked at `projects/<name>` so the generator discovers their actual `.env`; no separate registration file is created. For new projects, the generator creates the chosen web directory. `DOCUMENT_ROOT` accepts `.` or relative segments such as `public` and `web/public`; absolute paths and traversal are rejected.
 
 Example registration:
 
 ```sh
 WORKSPACE_PROJECT_NAME=api
-WORKSPACE_PROJECT_PATH='/absolute/path/to/api'
 WORKSPACE_PHP_VERSION=8.4
 WORKSPACE_HOSTNAME=api.local
-WORKSPACE_DATABASE=api
+DB_DATABASE=api
 WORKSPACE_DOCUMENT_ROOT=public
 WORKSPACE_HTTP_PORT=8090
 ```
 
-`WORKSPACE_*` assignments in `docker/projects/<name>.env` configure Docker registration. The generator reads only these fields and does not execute dotenv content. Registration files without `WORKSPACE_PROJECT_NAME` are skipped. Store application settings in the application's `.env`.
+`WORKSPACE_*` assignments in `projects/<name>/.env` configure Docker. `DB_DATABASE` supplies the application database name and database creation target. The source path comes from the containing directory (resolving external directory links). The generator reads these assignments as data and never executes dotenv content. Files without `WORKSPACE_PROJECT_NAME` are skipped. `.env.example` provides safe bootstrap defaults only when `.env` is absent; edit `.env` to change runtime settings.
 
 Use the framework's public directory when it has one. With `DOCUMENT_ROOT=.`, non-hidden source files are within the web root. Generated Nginx configuration denies hidden paths and `project.env`; it does not classify every application file as private.
 
 Each application supports its hostname on shared port `80` and its dedicated
-`http://localhost:port` URL. `WORKSPACE_HTTP_PORT` in `docker/projects/<name>.env` controls the
+`http://localhost:port` URL. `WORKSPACE_HTTP_PORT` in `projects/<name>/.env` controls the
 dedicated port; registration allocates an unused workspace port starting at `8083`,
 or accepts `HTTP_PORT=8090` with `make project-add`. Apply changes with
 `make project-up NAME=api`. Ports `8081` and `8082` are reserved for phpMyAdmin
@@ -98,9 +97,9 @@ Containers use these addresses regardless of host port overrides:
 | Database password | `MARIADB_ROOT_PASSWORD` from `docker/.env` |
 | Redis host / port | `redis` / `6379` |
 
-The generated application template includes `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HOST`, and `REDIS_PORT`. The password is intentionally blank in the template. Set it in the actual source directory's local `.env` and adapt variable names to your framework.
+Application `.env` and `.env.example` templates follow Laravel naming for application, logging, database, session, filesystem, queue, cache, Redis, and mail settings. `DB_CONNECTION=mysql` selects the MariaDB-compatible driver; database and Redis hosts point to the Docker services. File sessions/cache and synchronous queues work without extra tables or workers. `CACHE_STORE` is used by newer Laravel versions; `CACHE_DRIVER` supports Laravel 10 and earlier. `REDIS_CLIENT=predis` requires `predis/predis` if Redis is used. `APP_KEY` and `DB_PASSWORD` are intentionally blank in templates: generate the key with `php artisan key:generate` for Laravel and set the local database password to match `docker/.env`. New project templates use the registered hostname for `APP_URL`; existing application values are preserved when workspace fields are appended during registration.
 
-PHP containers also receive the database host/port/name and Redis host/port as process environment variables. Credentials are not injected. Frameworks differ in how they combine process variables and dotenv files; keep registration and application settings consistent, and clear cached configuration when your framework requires it.
+Application connections are loaded from the project’s `.env` by the application. The generated PHP service does not override them with process environment variables. Clear cached Laravel configuration after changing application settings when required.
 
 Plain PHP does not load `.env` files automatically. Use the application's environment loader or explicitly configured process settings. The installed extensions include `mysqli` and `pdo_mysql`; a PHP Redis extension is not installed, so use an application-compatible client library or add the required extension to the image.
 
@@ -159,9 +158,9 @@ The image includes Composer, curl, Git, zip/unzip, and a database client. It doe
 
 `make up` starts all registered projects. `make down` stops the stack and retains persistent data. `make restart` restarts existing containers; it does not apply new image builds or volume mounts. `make build` builds PHP images but does not recreate running containers.
 
-To change PHP versions, edit `WORKSPACE_PHP_VERSION` in `docker/projects/<name>.env` and run `make project-up NAME=api`. Recheck Composer dependencies for the new runtime.
+To change PHP versions, edit `WORKSPACE_PHP_VERSION` in `projects/<name>/.env` and run `make project-up NAME=api`. Recheck Composer dependencies for the new runtime.
 
-To change a hostname, source path, database, or document root, edit the registration and run `make project-up NAME=api`. Update hosts/application settings as needed. Renaming `WORKSPACE_DATABASE` creates a new database; it does not move existing data.
+To change a hostname, database, or document root, edit the project’s `.env` and run `make project-up NAME=api`. Update the hosts file and `APP_URL` when changing the hostname. Change an external source path by updating its directory link under `projects/`. Changing `DB_DATABASE` creates a new database; it does not move existing data.
 
 ## 6. Customize PHP and system packages
 
@@ -187,11 +186,11 @@ Each project writes PHP errors to `dev/logs/php-error.log` inside its source
 folder. Setup creates a writable log directory; generated Nginx routes deny
 web access to `dev/`. Logs are ignored by Git. Plain PHP application code can
 use `error_log()` for debug messages. The itechorbit source is in
-`projects/itechorbit`, with `WORKSPACE_PROJECT_PATH=projects/itechorbit` and
-`WORKSPACE_DOCUMENT_ROOT=.` in `docker/projects/itechorbit.env`. Run
+`projects/itechorbit`, with `WORKSPACE_DOCUMENT_ROOT=.` in `projects/itechorbit/.env`. Run
 `make project-up NAME=itechorbit` to start that workspace project.
-`WORKSPACE_STORAGE_VOLUME` and `WORKSPACE_CACHE_VOLUME` adopt its existing initialized
-Docker volumes as external volumes, preserving sessions, uploads, and caches.
+For projects with existing Laravel runtime volumes, `WORKSPACE_STORAGE_VOLUME`
+and `WORKSPACE_CACHE_VOLUME` adopt those initialized Docker volumes as external
+volumes, preserving sessions, uploads, and caches.
 When these two settings are present, source mounts read-only and the generator
 leaves the application's environment and log directories intact.
 
@@ -215,7 +214,7 @@ MariaDB persists in the Compose-managed `mariadb_data` volume, normally named `p
 
 Back up important databases with a logical SQL export using your database client or phpMyAdmin, and verify a restore into a separate database before deleting old data. Do not reuse MySQL's raw storage files as MariaDB data. Historical migration details and backups are local to the original workstation and are not prerequisites for a fresh clone.
 
-To unregister a project, remove its `WORKSPACE_*` assignments from `docker/projects/<name>.env`, then run `make up`. This removes stale Nginx configuration and orphan containers; source files and databases are not deleted. Avoid changing a project name casually because it identifies its runtime service.
+To unregister a project, remove its `WORKSPACE_PROJECT_NAME` assignment from `projects/<name>/.env`, then run `make up`. This removes stale Nginx configuration and orphan containers; source files and databases are not deleted. Avoid changing a project name casually because it identifies its runtime service.
 
 ## 8. Troubleshoot and contribute
 

@@ -20,9 +20,9 @@ The review used the current working tree, including changes already present befo
 ## Existing behavior confirmed
 
 - Each registered project selects its own PHP version and optional ini mount.
-- Registration is separate from application `.env` files, and existing code/settings are preserved.
+- Registration lives in the application `.env`; existing code and application values are preserved when workspace fields are appended. External sources use directory links under `projects/`.
 - Definitions and Compose configuration validate before generated files are replaced.
-- Failed registration removes the new definition and preserves prior generated configuration.
+- Failed registration restores the original application `.env`, removes newly created directory links and templates, and preserves prior generated configuration.
 - Removed registrations remove stale generated Nginx configuration.
 - Nginx denies hidden paths and `project.env`, resolves PHP service DNS at request time, and returns 404 for unknown hosts.
 - Database initialization uses `CREATE DATABASE IF NOT EXISTS` and runs against a healthy MariaDB service.
@@ -32,7 +32,7 @@ The review used the current working tree, including changes already present befo
 
 | Area | Constraint and development implication |
 | --- | --- |
-| Configuration trust | `WORKSPACE_*` settings are read from `.env.example` without executing application dotenv content. Make variables are also intended for trusted developer input. |
+| Configuration trust | `WORKSPACE_*` settings and `DB_DATABASE` are read from the application `.env` without executing dotenv content. Make variables are also intended for trusted developer input. |
 | Shared services | Projects share MariaDB root access and Redis. Separate database names do not enforce access isolation. Configure application cache prefixes and add scoped database users when required. |
 | Network exposure | Compose port mappings currently use Docker's default host binding, which can expose them on interfaces beyond loopback. For an exclusively local environment, prefix mappings with `127.0.0.1:` in Compose. |
 | Web root | The compatible default `DOCUMENT_ROOT=.` serves non-hidden files from the source root. Use the application's public directory to keep private source outside the web root. |

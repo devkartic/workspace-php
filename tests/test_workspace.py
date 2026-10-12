@@ -20,7 +20,6 @@ class WorkspaceTests(unittest.TestCase):
             "scripts/projects", "scripts/workspace", "Makefile", "docker/docker-compose.yml",
             "docker/.env.example", "docker/nginx/base.conf",
             "projects/dashboard/.env.example", "projects/dashboard/dev/php.ini",
-            "docker/projects/dashboard.env",
         ):
             target = self.root / item
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -49,8 +48,9 @@ class WorkspaceTests(unittest.TestCase):
         result = self.run_command("./scripts/projects", "add", "external",
                                   str(app), "8.3", "external.local", "external")
         self.assertIn("Added external.", result.stdout)
-        self.assertEqual((app / ".env").read_text(), "APPLICATION_SECRET=untouched\n")
-        self.assertTrue((self.root / "docker/projects/external.env").exists())
+        self.assertTrue((app / ".env").read_text().startswith("APPLICATION_SECRET=untouched\n"))
+        self.assertTrue((self.root / "projects/external").is_symlink())
+        self.assertFalse((self.root / "docker/projects").exists())
         self.assertIn("external", self.run_command("./scripts/projects", "list").stdout)
         config = self.run_command(
             "docker", "compose", "--env-file", "docker/.env.example",
@@ -65,9 +65,9 @@ class WorkspaceTests(unittest.TestCase):
         before = self.snapshot()
         bad = self.root / "projects/zbad"
         bad.mkdir()
-        (self.root / "docker/projects/zbad.env").write_text(
-            "WORKSPACE_PROJECT_NAME=zbad\nWORKSPACE_PROJECT_PATH=projects/zbad\n"
-            "WORKSPACE_PHP_VERSION=9.9\nWORKSPACE_HOSTNAME=zbad.local\nWORKSPACE_DATABASE=zbad\n")
+        (bad / ".env").write_text(
+            "WORKSPACE_PROJECT_NAME=zbad\n"
+            "WORKSPACE_PHP_VERSION=9.9\nWORKSPACE_HOSTNAME=zbad.local\nDB_DATABASE=zbad\n")
         self.run_command("./scripts/projects", "sync", success=False)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(list((self.root / "docker/generated").glob(".sync.*")), [])
@@ -95,12 +95,15 @@ class WorkspaceTests(unittest.TestCase):
         app.mkdir(parents=True)
         self.run_command("./scripts/projects", "add", "external", str(app),
                          "8.3", "external.local", "external", success=False)
-        self.assertFalse((self.root / "docker/projects/external.env").exists())
+        self.assertFalse((app / ".env").exists())
+        self.assertFalse((app / ".env.example").exists())
+        self.assertFalse((self.root / "projects/external").is_symlink())
         self.assertEqual(self.snapshot(), before)
 
     def test_removing_project_removes_stale_configuration(self):
         self.run_command("./scripts/projects", "sync")
-        (self.root / "docker/projects/dashboard.env").unlink()
+        env = self.root / "projects/dashboard/.env"
+        env.write_text(env.read_text().replace("WORKSPACE_PROJECT_NAME=dashboard", ""))
         self.run_command("./scripts/projects", "sync")
         self.assertEqual(list((self.root / "docker/nginx/generated").glob("*.conf")), [])
         self.assertEqual((self.root / "docker/generated/projects.compose.yml").read_text(),
@@ -138,13 +141,13 @@ class WorkspaceTests(unittest.TestCase):
     def test_creation_requires_only_name_and_version(self):
         self.run_command("make", "project-add", "NAME=my_app", "PHP=8.4")
         project = self.root / "projects/my_app"
-        self.assertIn("PHP_VERSION=8.4", (self.root / "docker/projects/my_app.env").read_text())
-        self.assertIn("HOSTNAME=my-app.local", (self.root / "docker/projects/my_app.env").read_text())
+        self.assertIn("PHP_VERSION=8.4", (project / ".env").read_text())
+        self.assertIn("HOSTNAME=my-app.local", (project / ".env").read_text())
         self.assertIn("DB_DATABASE=my_app", (project / ".env").read_text())
         self.assertEqual(list(self.root.rglob("project.env")), [])
         self.assertTrue((project / ".env.example").exists())
-        self.assertNotIn("WORKSPACE_", (project / ".env.example").read_text())
-        self.assertNotIn("WORKSPACE_", (project / ".env").read_text())
+        self.assertIn("WORKSPACE_PROJECT_NAME=my_app", (project / ".env.example").read_text())
+        self.assertIn("WORKSPACE_PROJECT_NAME=my_app", (project / ".env").read_text())
         result = self.run_command("php", str(project / "index.php"))
         self.assertIn("my_app is running", result.stdout)
         self.run_command("./scripts/projects", "check", "my_app")
@@ -156,7 +159,7 @@ class WorkspaceTests(unittest.TestCase):
         (project / ".env").write_text("APPLICATION_SECRET=untouched\n")
         (project / "index.php").write_text("<?php echo 'existing code';\n")
         self.run_command("make", "project-add", "NAME=existing", "PHP=8.3")
-        self.assertEqual((project / ".env").read_text(), "APPLICATION_SECRET=untouched\n")
+        self.assertTrue((project / ".env").read_text().startswith("APPLICATION_SECRET=untouched\n"))
         self.assertEqual((project / "index.php").read_text(), "<?php echo 'existing code';\n")
 
     def test_ini_mount_is_optional_and_project_specific(self):
@@ -212,7 +215,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(self.snapshot(), before)
         self.run_command("make", "project-add", "NAME=other", "PHP=8.4")
         self.assertIn("WORKSPACE_HTTP_PORT=8084",
-                      (self.root / "docker/projects/other.env").read_text())
+                      (self.root / "projects/other/.env").read_text())
 
     def test_existing_laravel_runtime_volumes_and_source_are_preserved(self):
         app = self.root / "external/laravel"
@@ -220,12 +223,12 @@ class WorkspaceTests(unittest.TestCase):
             (app / directory).mkdir(parents=True, exist_ok=True)
         (app / ".env").write_text("APP_SECRET=untouched\n")
         (app / "dev/logs/php-error.log").write_text("existing log\n")
-        registration = self.root / "docker/projects/laravel.env"
-        registration.parent.mkdir(exist_ok=True)
+        registration = app / ".env"
+        (self.root / "projects/laravel").symlink_to(app, target_is_directory=True)
         registration.write_text(
-            f"WORKSPACE_PROJECT_NAME=laravel\nWORKSPACE_PROJECT_PATH={app}\n"
+            "APP_SECRET=untouched\nWORKSPACE_PROJECT_NAME=laravel\n"
             "WORKSPACE_PHP_VERSION=8.4\nWORKSPACE_HOSTNAME=laravel.local\n"
-            "WORKSPACE_DATABASE=laravel\nWORKSPACE_DOCUMENT_ROOT=public\n"
+            "DB_DATABASE=laravel\nWORKSPACE_DOCUMENT_ROOT=public\n"
             "WORKSPACE_HTTP_PORT=8090\nWORKSPACE_STORAGE_VOLUME=old_storage\n"
             "WORKSPACE_CACHE_VOLUME=old_bootstrap-cache\n")
         before = {str(p): p.read_bytes() for p in app.rglob("*") if p.is_file()}
@@ -266,6 +269,37 @@ class WorkspaceTests(unittest.TestCase):
             self.run_command("./scripts/projects", "add", name, "projects/web",
                              "8.4", host, "web", document_root, success=False)
             self.assertEqual(self.snapshot(), before)
+
+    def test_runtime_env_controls_generation_and_preserves_database_choice(self):
+        self.run_command("./scripts/projects", "sync")
+        env = self.root / "projects/dashboard/.env"
+        env.write_text(env.read_text().replace("WORKSPACE_PHP_VERSION=7.4", "WORKSPACE_PHP_VERSION=8.4")
+                       .replace("DB_DATABASE=dashboard", "DB_DATABASE=chosen_db"))
+        self.run_command("./scripts/projects", "sync")
+        generated = (self.root / "docker/generated/projects.compose.yml").read_text()
+        self.assertIn('PHP_VERSION: "8.4"', generated)
+        self.assertIn('`chosen_db`', (self.root / "docker/generated/databases.sql").read_text())
+        self.assertNotIn("environment:", generated)
+        self.assertIn('PHP_VERSION=7.4', (env.parent / ".env.example").read_text())
+        app = self.root / "projects/existing_db"
+        app.mkdir()
+        (app / ".env").write_text("DB_DATABASE=already_selected\nDB_PASSWORD=keep_this\n")
+        self.run_command("make", "project-add", "NAME=existing_db", "PHP=8.4")
+        self.assertTrue((app / ".env").read_text().startswith(
+            "DB_DATABASE=already_selected\nDB_PASSWORD=keep_this\n"))
+        self.assertIn('`already_selected`', (self.root / "docker/generated/databases.sql").read_text())
+
+    def test_failed_registration_restores_existing_env_exactly(self):
+        self.run_command("./scripts/projects", "sync")
+        app = self.root / "external/rollback"
+        app.mkdir(parents=True)
+        original = "APP_NAME=Existing\nDB_PASSWORD=untouched\n"
+        (app / ".env").write_text(original)
+        self.run_command("./scripts/projects", "add", "rollback", str(app),
+                         "8.4", "dashboard.local", "rollback", success=False)
+        self.assertEqual((app / ".env").read_text(), original)
+        self.assertFalse((app / ".env.example").exists())
+        self.assertFalse((self.root / "projects/rollback").is_symlink())
 
     def test_setup_preserves_local_configuration_and_checks_daemon(self):
         mock_bin = self.root / "bin"

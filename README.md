@@ -52,17 +52,17 @@ make shell PROJECT=api
 composer install
 ```
 
-Source files and existing application environment files are preserved. Registration supplies infrastructure connections; configure your application's credentials and run its own setup commands as described in [the project guide](PROJECT_GUIDE.md).
+Source files and existing application environment values are preserved. Registration appends workspace settings to the application’s `.env` and links external source directories under `projects/<name>`; configure your application's credentials and run its own setup commands as described in [the project guide](PROJECT_GUIDE.md).
 
 ## Everyday commands
 
 ### itechorbit
 
 The application source is in `projects/itechorbit` inside this workspace.
-Its workspace settings are in `docker/projects/itechorbit.env`; it uses the same
-shared Compose and Nginx setup as the other projects. The current PHP starter
-serves `index.php` from the project root. PHP logs are in `dev/logs/`, and
-application settings are in the project's `.env`.
+Its application settings and documented Docker settings share
+`projects/itechorbit/.env`. It uses the same shared Compose and Nginx setup as
+the other projects. The current PHP starter serves `index.php` from the
+project root, and PHP logs are in `dev/logs/`.
 
 Run `make project-up NAME=itechorbit`, then open **http://itechorbit.local** or
 **http://localhost:8082**. It uses the existing MariaDB database and Redis service;
@@ -95,7 +95,7 @@ The included projects support both URL styles:
 
 New projects automatically receive an unused workspace port starting at `8083`.
 Override it with `make project-add NAME=api PHP=8.4 HTTP_PORT=8090` or edit
-`WORKSPACE_HTTP_PORT` in `docker/projects/<name>.env`, then run
+`WORKSPACE_HTTP_PORT` in `projects/<name>/.env`, then run
 `make project-up NAME=api`. Port URLs require no hosts-file entries.
 
 ## How the workspace fits together
@@ -115,11 +115,11 @@ Browser → Nginx → project PHP-FPM container
 ├── docker/
 │   ├── .env.example              Local infrastructure settings template
 │   ├── docker-compose.yml        Shared services and optional tools
-│   ├── projects/<name>.env        Docker project registration
 │   ├── php/                      PHP image recipe and shared ini defaults
 │   └── nginx/base.conf           Shared routing and Docker DNS configuration
 ├── projects/<name>/
-│   ├── .env.example              Safe application environment template
+│   ├── .env                      Application and Docker workspace settings (ignored)
+│   ├── .env.example              Safe defaults for fresh checkouts
 │   ├── dev/php.ini               Project PHP settings
 │   ├── dev/logs/                 Project debug logs (ignored by Git)
 │   └── …                         Application source
