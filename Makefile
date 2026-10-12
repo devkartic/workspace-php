@@ -6,6 +6,7 @@ PROJECT_PATH ?= projects/$(NAME)
 HOST ?= $(subst _,-,$(NAME)).local
 DB ?= $(NAME)
 DOCUMENT_ROOT ?= .
+HTTP_PORT ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help setup doctor sync project-add project-list project-up project-restart up down restart build ps logs validate tools shell mariadb mysql redis-cli test
@@ -15,7 +16,7 @@ help:
 	  'make setup         Check prerequisites, create local Docker env, and generate configuration' \
 	  'make doctor        Check required tools and Docker daemon access' \
 	  'make sync          Regenerate Compose, Nginx, and database setup from project definitions' \
-	  'make project-add NAME=api PHP=8.4  Create a project (optional PROJECT_PATH, HOST, DB, DOCUMENT_ROOT)' \
+	  'make project-add NAME=api PHP=8.4  Create a project (optional PROJECT_PATH, HOST, DB, DOCUMENT_ROOT, HTTP_PORT)' \
 	  'make project-list  List registered projects, PHP versions, hosts, and databases' \
 	  'make project-up NAME=api  Start or rebuild one project and shared services' \
 	  'make project-restart NAME=api  Apply PHP ini changes to one project' \
@@ -42,7 +43,7 @@ sync:
 
 project-add:
 	@test -n "$(NAME)" -a -n "$(PHP)" || (echo 'Usage: make project-add NAME=api PHP=8.4'; exit 2)
-	./scripts/projects add "$(NAME)" "$(PROJECT_PATH)" "$(PHP)" "$(HOST)" "$(DB)" "$(DOCUMENT_ROOT)"
+	./scripts/projects add "$(NAME)" "$(PROJECT_PATH)" "$(PHP)" "$(HOST)" "$(DB)" "$(DOCUMENT_ROOT)" "$(HTTP_PORT)"
 
 project-list:
 	./scripts/projects list

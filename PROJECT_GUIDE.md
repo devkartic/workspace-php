@@ -10,7 +10,7 @@ Install the requirements listed in [README.md](README.md), start Docker, and run
 make setup
 ```
 
-Setup checks Docker, Compose, Make, and daemon access. It preserves an existing `docker/.env`, creates one from the example when missing, and generates configuration from every registration under `projects/*/project.env`. Missing application `.env.example` and `.env` files are also created; existing ones are preserved.
+Setup checks Docker, Compose, Make, and daemon access. It preserves an existing `docker/.env`, creates one from the example when missing, and generates configuration from every registration under `docker/projects/*.env`. Missing application `.env.example` and `.env` files are also created; existing ones are preserved.
 
 Review `docker/.env` before starting containers:
 
@@ -32,24 +32,24 @@ Keep `COMPOSE_PROJECT_NAME` stable once you have data: changing it selects a dif
 Supported versions in the generator: **7.4, 8.1, 8.3, and 8.4**. Choose the version required by the application and its Composer dependencies.
 
 ```sh
-make project-add NAME=myapp PHP=8.4
+make project-add NAME=exampleapp PHP=8.4
 ```
 
 Names and database names must start with a lowercase letter and contain only lowercase letters, numbers, or underscores. Shared service names such as `nginx`, `mariadb`, and `redis` are reserved. Underscores become hyphens in the default hostname: `my_app` uses `my-app.local`.
 
-| Registration field | Default for `myapp` | Meaning |
+| Registration field | Default for `exampleapp` | Meaning |
 | --- | --- | --- |
-| `PROJECT_NAME` | `myapp` | PHP Compose service name |
-| `PROJECT_PATH` | `projects/myapp` | Source path, relative to workspace root or absolute |
+| `PROJECT_NAME` | `exampleapp` | PHP Compose service name |
+| `PROJECT_PATH` | `projects/exampleapp` | Source path, relative to workspace root or absolute |
 | `PHP_VERSION` | Required | PHP-FPM image version |
-| `HOSTNAME` | `myapp.local` | Unique Nginx hostname |
-| `DATABASE` | `myapp` | Database to create on the shared MariaDB server |
+| `HOSTNAME` | `exampleapp.local` | Unique Nginx hostname |
+| `DATABASE` | `exampleapp` | Database to create on the shared MariaDB server |
 | `DOCUMENT_ROOT` | `.` | Web directory relative to source root; commonly `public` |
 
 A new default project receives a small runtime-check endpoint and application environment templates. To create a starter with a public web directory:
 
 ```sh
-make project-add NAME=myapp PHP=8.4 DOCUMENT_ROOT=public
+make project-add NAME=exampleapp PHP=8.4 DOCUMENT_ROOT=public
 ```
 
 For an existing application:
@@ -60,22 +60,31 @@ make project-add NAME=api PHP=8.4 \
   DOCUMENT_ROOT=public HOST=api.local DB=api
 ```
 
-Custom source paths must already exist, and an existing application's document root must exist. Quote paths containing spaces. Registration lives under `projects/*/project.env`; external and nested applications have a registration directory in the workspace. For new projects, the generator creates the chosen web directory. `DOCUMENT_ROOT` accepts `.` or relative segments such as `public` and `web/public`; absolute paths and traversal are rejected.
+Custom source paths must already exist, and an existing application's document root must exist. Quote paths containing spaces. Registration lives under `docker/projects/*.env`; external and nested applications use a Docker registration file without changing their own environment files. For new projects, the generator creates the chosen web directory. `DOCUMENT_ROOT` accepts `.` or relative segments such as `public` and `web/public`; absolute paths and traversal are rejected.
 
 Example registration:
 
 ```sh
-PROJECT_NAME=api
-PROJECT_PATH='/absolute/path/to/api'
-PHP_VERSION=8.4
-HOSTNAME=api.local
-DATABASE=api
-DOCUMENT_ROOT=public
+WORKSPACE_PROJECT_NAME=api
+WORKSPACE_PROJECT_PATH='/absolute/path/to/api'
+WORKSPACE_PHP_VERSION=8.4
+WORKSPACE_HOSTNAME=api.local
+WORKSPACE_DATABASE=api
+WORKSPACE_DOCUMENT_ROOT=public
+WORKSPACE_HTTP_PORT=8090
 ```
 
-`project.env` is trusted shell configuration sourced by the generator. Keep it to the documented assignments and review it as code. Store application settings in the application's `.env`.
+`WORKSPACE_*` assignments in `docker/projects/<name>.env` configure Docker registration. The generator reads only these fields and does not execute dotenv content. Registration files without `WORKSPACE_PROJECT_NAME` are skipped. Store application settings in the application's `.env`.
 
 Use the framework's public directory when it has one. With `DOCUMENT_ROOT=.`, non-hidden source files are within the web root. Generated Nginx configuration denies hidden paths and `project.env`; it does not classify every application file as private.
+
+Each application supports its hostname on shared port `80` and its dedicated
+`http://localhost:port` URL. `WORKSPACE_HTTP_PORT` in `docker/projects/<name>.env` controls the
+dedicated port; registration allocates an unused workspace port starting at `8083`,
+or accepts `HTTP_PORT=8090` with `make project-add`. Apply changes with
+`make project-up NAME=api`. Ports `8081` and `8082` are reserved for phpMyAdmin
+and itechorbit. Keep chosen ports free of other host services.
+Use `make project-list` to see each assignment. Only hostname URLs need hosts entries.
 
 ## 3. Configure application connections
 
@@ -150,9 +159,9 @@ The image includes Composer, curl, Git, zip/unzip, and a database client. It doe
 
 `make up` starts all registered projects. `make down` stops the stack and retains persistent data. `make restart` restarts existing containers; it does not apply new image builds or volume mounts. `make build` builds PHP images but does not recreate running containers.
 
-To change PHP versions, edit `PHP_VERSION` in the registration and run `make project-up NAME=api`. Recheck Composer dependencies for the new runtime.
+To change PHP versions, edit `WORKSPACE_PHP_VERSION` in `docker/projects/<name>.env` and run `make project-up NAME=api`. Recheck Composer dependencies for the new runtime.
 
-To change a hostname, source path, database, or document root, edit the registration and run `make project-up NAME=api`. Update hosts/application settings as needed. Renaming `DATABASE` creates a new database; it does not move existing data.
+To change a hostname, source path, database, or document root, edit the registration and run `make project-up NAME=api`. Update hosts/application settings as needed. Renaming `WORKSPACE_DATABASE` creates a new database; it does not move existing data.
 
 ## 6. Customize PHP and system packages
 
@@ -165,7 +174,7 @@ memory_limit = 1024M
 upload_max_filesize = 256M
 post_max_size = 256M
 log_errors = On
-error_log = /proc/self/fd/2
+error_log = /var/www/html/dev/logs/php-error.log
 ```
 
 Then run:
@@ -173,6 +182,18 @@ Then run:
 ```sh
 make project-restart NAME=api
 ```
+
+Each project writes PHP errors to `dev/logs/php-error.log` inside its source
+folder. Setup creates a writable log directory; generated Nginx routes deny
+web access to `dev/`. Logs are ignored by Git. Plain PHP application code can
+use `error_log()` for debug messages. The itechorbit source is in
+`projects/itechorbit`, with `WORKSPACE_PROJECT_PATH=projects/itechorbit` and
+`WORKSPACE_DOCUMENT_ROOT=.` in `docker/projects/itechorbit.env`. Run
+`make project-up NAME=itechorbit` to start that workspace project.
+`WORKSPACE_STORAGE_VOLUME` and `WORKSPACE_CACHE_VOLUME` adopt its existing initialized
+Docker volumes as external volumes, preserving sessions, uploads, and caches.
+When these two settings are present, source mounts read-only and the generator
+leaves the application's environment and log directories intact.
 
 The project file mounts as `zz-project.ini`, after shared `zz-custom.ini`. Recreating the container picks up new mounts and settings. `make sync` alone does not apply them to a running PHP process.
 
@@ -194,7 +215,7 @@ MariaDB persists in the Compose-managed `mariadb_data` volume, normally named `p
 
 Back up important databases with a logical SQL export using your database client or phpMyAdmin, and verify a restore into a separate database before deleting old data. Do not reuse MySQL's raw storage files as MariaDB data. Historical migration details and backups are local to the original workstation and are not prerequisites for a fresh clone.
 
-To unregister a project, remove its registration file after saving any needed configuration, then run `make up`. This removes stale Nginx configuration and orphan containers; source files and databases are not deleted. Avoid changing a project name casually because it identifies its runtime service.
+To unregister a project, remove its `WORKSPACE_*` assignments from `docker/projects/<name>.env`, then run `make up`. This removes stale Nginx configuration and orphan containers; source files and databases are not deleted. Avoid changing a project name casually because it identifies its runtime service.
 
 ## 8. Troubleshoot and contribute
 
@@ -229,12 +250,12 @@ Commit safe templates, registrations, and application lockfiles. Do not commit `
 
 ```text
 Read README.md and PROJECT_GUIDE.md, then create or register a project:
-Name: myapp
+Name: exampleapp
 PHP: 8.4
-Source path: projects/myapp
+Source path: projects/exampleapp
 Document root: public
-Hostname: myapp.local
-Database: myapp
+Hostname: exampleapp.local
+Database: exampleapp
 Optional PHP settings:
   memory_limit = 1024M
   upload_max_filesize = 256M

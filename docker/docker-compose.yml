@@ -2,7 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-php-workspace}
 
 services:
   # Project-specific PHP-FPM services and Nginx source mounts are generated in
-  # docker/generated/projects.compose.yml from projects/*/project.env.
+  # docker/generated/projects.compose.yml from projects/*/.env.example.
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped

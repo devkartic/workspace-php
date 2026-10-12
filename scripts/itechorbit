@@ -1,0 +1,15 @@
+#!/bin/sh
+# Compatibility shortcut for the shared workspace runtime.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+compose() {
+  docker compose --env-file docker/.env -f docker/docker-compose.yml -f docker/generated/projects.compose.yml "$@"
+}
+case "${1:-up}" in
+  up) make project-up NAME=itechorbit ;;
+  down) compose stop itechorbit ;;
+  ps|logs) compose "$1" itechorbit ;;
+  shell) compose exec itechorbit sh ;;
+  *) echo 'Usage: scripts/itechorbit {up|down|ps|logs|shell}' >&2; exit 2 ;;
+esac

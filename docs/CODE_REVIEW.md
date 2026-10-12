@@ -32,7 +32,7 @@ The review used the current working tree, including changes already present befo
 
 | Area | Constraint and development implication |
 | --- | --- |
-| Configuration trust | `project.env` is sourced as shell code. Only use reviewed local registrations; it is not an untrusted input format. Make variables are also intended for trusted developer input. |
+| Configuration trust | `WORKSPACE_*` settings are read from `.env.example` without executing application dotenv content. Make variables are also intended for trusted developer input. |
 | Shared services | Projects share MariaDB root access and Redis. Separate database names do not enforce access isolation. Configure application cache prefixes and add scoped database users when required. |
 | Network exposure | Compose port mappings currently use Docker's default host binding, which can expose them on interfaces beyond loopback. For an exclusively local environment, prefix mappings with `127.0.0.1:` in Compose. |
 | Web root | The compatible default `DOCUMENT_ROOT=.` serves non-hidden files from the source root. Use the application's public directory to keep private source outside the web root. |
