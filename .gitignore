@@ -15,3 +15,13 @@ projects/**/.env
 # Reinstall application dependencies from their committed lockfiles.
 projects/**/vendor/
 projects/**/node_modules/
+
+# Private production configuration and generated credentials
+docker/.env.production
+docker/production/
+docker/.workspace-lock/
+
+# Independent stack runtime and private project infrastructure
+docker/stacks/
+projects/**/.docker/infra.*.env
+docker/.stack-*.lock/

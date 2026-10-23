@@ -1,0 +1,23 @@
+# Optional Laravel worker. Copy to compose.override.production.yml to enable.
+# Requires WORKSPACE_WRITABLE_PATHS=storage bootstrap/cache and a prepared Laravel app.
+services:
+  worker:
+    image: ${STACK_NAME}-php:${IMAGE_TAG}
+    user: www-data
+    command: [php, -d, memory_limit=192M, artisan, 'queue:work', '--sleep=3', '--tries=3', '--timeout=60', '--memory=128', '--max-time=3600']
+    restart: unless-stopped
+    stop_grace_period: 90s
+    mem_limit: 256m
+    cpus: 0.5
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - ${PROJECT_SOURCE}/.env:/var/www/html/.env:ro
+      - runtime_storage:/var/www/html/storage
+      - runtime_bootstrap_cache:/var/www/html/bootstrap/cache
+    depends_on:
+      mariadb: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

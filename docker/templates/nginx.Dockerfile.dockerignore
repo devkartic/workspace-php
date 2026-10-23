@@ -1,0 +1,18 @@
+# Dockerfile-specific exclusions apply to the project root build context.
+.git
+**/.git
+.env
+.env.*
+**/.env
+**/.env.*
+.docker/infra.*.env
+.docker/compose.override*.yml
+.docker/compose.override*.yaml
+**/node_modules
+**/dev/logs
+**/backups
+.idea
+.DS_Store
+__pycache__
+**/*.log
+**/storage/logs/*

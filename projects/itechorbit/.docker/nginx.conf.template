@@ -1,0 +1,29 @@
+resolver 127.0.0.11 valid=10s ipv6=off;
+client_max_body_size 128m;
+server {
+    listen 80 default_server;
+    server_name _;
+    root /var/www/html/${DOCUMENT_ROOT};
+    index index.php index.html;
+    server_tokens off;
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location = /dev { deny all; }
+    location ^~ /dev/ { deny all; }
+    location ~ /\. { deny all; }
+    location ~* \.(?:env|sql|bak|ini|log)$ { deny all; }
+    location ~ ^/storage/.*\.php$ { deny all; }
+    location /storage/ { alias /var/www/html/storage/app/public/; }
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME /var/www/html/${DOCUMENT_ROOT}$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT /var/www/html/${DOCUMENT_ROOT};
+        fastcgi_param HTTPS ${FASTCGI_HTTPS};
+        set $php_backend php:9000;
+        fastcgi_pass $php_backend;
+    }
+}
+server {
+    listen 8080;
+    location = /health { return 200 "ok\n"; }
+}

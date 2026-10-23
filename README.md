@@ -1,136 +1,141 @@
-# PHP Development Workspace
+# Independent PHP Docker projects
 
-A Docker workspace for running multiple PHP applications side by side. Each application gets its own PHP-FPM container, PHP version, hostname, and database. Nginx, MariaDB, and Redis are shared.
+Run PHP or Laravel applications on a workstation or VPS. Each project owns its PHP
+and Nginx images, MariaDB, Redis, backend network, and data volumes. Only the Caddy
+HTTP/HTTPS gateway is shared. Rebuilding or stopping one project leaves others alone.
 
-Use it to start a small PHP project, register an existing application, or work on projects that require different PHP versions.
+`itechorbit` is the only included project. It is a small PHP starter, not an
+installed Laravel application. Register additional applications with
+`make project-add`; existing code and Docker customizations are preserved.
 
 ## Requirements
 
-- Docker Engine with Docker Compose v2, or Docker Desktop, running locally.
-- Make and a POSIX shell. Commands below assume macOS, Linux, or a Linux shell in WSL.
-- Available host ports: HTTP `80`, MariaDB `3306`, Redis `6380`, and optional phpMyAdmin `8081`. Configure alternatives in `docker/.env`.
-- For regression tests only: Python 3 and a local PHP CLI.
+- Docker Engine/Desktop with Compose v2
+- Python 3.9+, Make, and a POSIX shell
+- Internet access for initial image builds
 
-PHP and Composer run inside containers; you do not need to install them locally for development. Initial image builds require internet access.
+Production instructions target Ubuntu 24.04 on Contabo. Projects share the host
+kernel, Docker daemon, CPU, RAM, and disk; use separate VMs for host-level isolation.
 
-## Quick start
+## Local development
 
-Run from the repository root:
+From the repository root:
 
 ```sh
 make setup
-make project-add NAME=exampleapp PHP=8.4
-make project-up NAME=exampleapp
-```
-
-`make setup` checks tools and Docker access, copies `docker/.env.example` only when `docker/.env` is missing, and generates validated configuration. It does not start containers.
-
-Add this entry to your hosts file (`/etc/hosts` on macOS/Linux):
-
-```text
-127.0.0.1 exampleapp.local
-```
-
-Open the `http://localhost:port` URL shown by registration immediately, or **http://exampleapp.local** after adding the hosts entry. Both addresses serve the same application. Use `make project-list` to see assigned ports. To check routing without editing your hosts file:
-
-```sh
-curl -H 'Host: exampleapp.local' http://127.0.0.1/
-```
-
-Use the configured HTTP port in the URL when it differs from `80`. To start the included examples instead, run `make setup` and `make up`: `dashboard.local` uses PHP 7.4 and `php84.local` uses PHP 8.4.
-
-## Register an existing application
-
-For an application whose entry point is `public/index.php`:
-
-```sh
-make project-add NAME=api PHP=8.4 \
-  PROJECT_PATH=/absolute/path/to/api DOCUMENT_ROOT=public
+make project-add NAME=api DOCUMENT_ROOT=public
 make project-up NAME=api
-make shell PROJECT=api
-# Inside the container:
-composer install
 ```
 
-Source files and existing application environment values are preserved. Registration appends workspace settings to the application’s `.env` and links external source directories under `projects/<name>`; configure your application's credentials and run its own setup commands as described in [the project guide](PROJECT_GUIDE.md).
+Omitting `PHP` selects the tested stable default, **PHP 8.5**. Use `PHP=8.4`
+when an application needs an older supported branch. The selected version is
+saved in its settings; existing projects never upgrade implicitly. The default is
+maintained with the workspace rather than discovered online during creation.
+
+Open the localhost URL printed by registration. `make setup` prepares the included
+`itechorbit` starter but starts no containers. To start it, run:
+
+```sh
+make project-up NAME=itechorbit
+```
+
+The `project-add` command above creates a separate new project; use it whenever
+you are ready to add another application.
+
+For hostname routing, add `127.0.0.1 api.local` to your local `/etc/hosts`, then run
+`make gateway-up`. Open `http://api.local`. Add later routes with `make gateway-sync`.
+
+Register an existing application without replacing its code or environment values:
+
+```sh
+make project-add NAME=shop PROJECT_PATH=/srv/apps/shop DOCUMENT_ROOT=public
+```
+
+Existing applications must configure their project-local database and Redis
+credentials before startup. See [configuration and customization](PROJECT_GUIDE.md).
+
+## Deploy with a real domain
+
+Follow the [Ubuntu/Contabo production guide](docs/PRODUCTION.md) for prerequisites,
+credentials, permissions, and first deployment. The essential domain mapping is:
+
+| Layer | Example for project `main` |
+| --- | --- |
+| DNS at your authoritative DNS provider | `@ A YOUR_VPS_IPV4` and `www CNAME example.com` |
+| Application `.env` | `WORKSPACE_HOSTNAME=example.com` |
+| Optional aliases in the same `.env` | `WORKSPACE_DOMAIN_ALIASES=www.example.com` |
+| Laravel canonical URL | `APP_URL=https://example.com` |
+| Workspace `docker/.env.production` | `PRODUCTION_PROJECTS="main api"` and your `ACME_EMAIL` |
+
+DNS points traffic to the VPS; the gateway maps each hostname to its project.
+Aliases redirect to the canonical HTTPS domain with HTTP 308 and preserve the URI.
+Another project can use `api.example.com` with an A record pointing to the same VPS.
+Every canonical name and alias must be unique across selected projects.
+
+After completing the production guide's configuration:
+
+```sh
+make validate ENV=production NAME=main
+make project-up ENV=production NAME=main
+make gateway-up ENV=production
+```
+
+Caddy obtains and renews certificates automatically when DNS and ports 80/443 are
+reachable. Use `make gateway-sync ENV=production` after hostname/alias changes;
+ordinary project builds never restart the gateway. Public DNS and certificate
+issuance must be verified on your VPS.
 
 ## Everyday commands
 
-### itechorbit
+Append `ENV=production` for production. Run commands from the repository root.
 
-The application source is in `projects/itechorbit` inside this workspace.
-Its application settings and documented Docker settings share
-`projects/itechorbit/.env`. It uses the same shared Compose and Nginx setup as
-the other projects. The current PHP starter serves `index.php` from the
-project root, and PHP logs are in `dev/logs/`.
-
-Run `make project-up NAME=itechorbit`, then open **http://itechorbit.local** or
-**http://localhost:8082**. It uses the existing MariaDB database and Redis service;
-no migrations or seeding run. The `./scripts/itechorbit` shortcut remains available
-and now controls the shared service. Its `down` command stops only that service.
-
-| Command | Action |
+| Command | Purpose |
 | --- | --- |
-| `make help` | Show available commands |
-| `make setup` / `make doctor` | Initialize configuration / check prerequisites |
-| `make project-add NAME=api PHP=8.4` | Create or register a project |
-| `make project-up NAME=api` | Build/start one project and shared services; create missing databases |
-| `make project-restart NAME=api` | Recreate one PHP container to apply ini settings |
-| `make project-list` | List registered projects |
-| `make shell PROJECT=api` | Open a shell for Composer, PHP, and application commands |
-| `make up` / `make down` | Start all projects / stop the stack while retaining data |
-| `make ps` / `make logs` | Show service status / follow logs |
-| `make tools` | Start phpMyAdmin at http://localhost:8081 |
-| `make mariadb` / `make redis-cli` | Open database/cache clients |
-| `make sync` / `make validate` | Generate configuration / validate Compose |
-| `make test` | Run isolated regression tests without starting containers |
+| `make project-add NAME=api DOCUMENT_ROOT=public` | Create/register an application |
+| `make project-config NAME=api` | Scaffold missing project-owned Docker files |
+| `make project-up NAME=api` | Build/start this project's services |
+| `make project-down NAME=api` | Stop this project; keep data |
+| `make project-build NAME=api` | Build this project's images |
+| `make project-restart NAME=api` | Restart existing containers; use project-up to apply config changes |
+| `make project-logs NAME=api` / `make project-ps NAME=api` | Logs/status |
+| `make shell NAME=api` | Open the PHP container shell |
+| `make mariadb NAME=api` / `make redis-cli NAME=api` | Project-specific database/cache clients |
+| `make validate NAME=api` | Generate and validate one stack and its overrides |
+| `make backup NAME=api` | Create a private logical SQL backup |
+| `make restore NAME=api FILE=/path/backup.sql` | Restore a trusted dump into this project's database |
+| `make project-list` / `make sync` | List projects / validate all selected projects without starting them |
+| `make gateway-up` / `make gateway-sync` | Start shared gateway / gracefully reload routes |
+| `make gateway-logs` / `make gateway-down` | Gateway logs / explicitly stop all public routing |
+| `make up-all` / `make down-all` | Explicit bulk startup/shutdown; gateway remains separate |
+| `make doctor` / `make test` | Check prerequisites / run isolated configuration regressions |
 
-The included projects support both URL styles:
+Lifecycle aliases `up`, `down`, `build`, `restart`, `logs`, and `ps` also require
+`NAME`. No unqualified lifecycle command operates on every project.
 
-| Application | Hostname URL | Port URL |
-| --- | --- | --- |
-| itechorbit | http://itechorbit.local | http://localhost:8082 |
-| dashboard | http://dashboard.local | http://localhost:8083 |
-| php84 | http://php84.local | http://localhost:8084 |
-
-New projects automatically receive an unused workspace port starting at `8083`.
-Override it with `make project-add NAME=api PHP=8.4 HTTP_PORT=8090` or edit
-`WORKSPACE_HTTP_PORT` in `projects/<name>/.env`, then run
-`make project-up NAME=api`. Port URLs require no hosts-file entries.
-
-## How the workspace fits together
+## Files and customization
 
 ```text
-Browser → Nginx → project PHP-FPM container
-                       ├── MariaDB: project database
-                       └── Redis: shared cache/queues
+Makefile                         Supported command interface
+scripts/stacks.py                Single workspace CLI
+PROJECT_GUIDE.md                 Settings, images, overrides, and added services
+docs/PRODUCTION.md               VPS, real domains, email, backups, and migration
+docker/docker-compose.yml        Base Compose scaffolding template
+docker/templates/                Other scaffolding templates
+docker/project.env.example      Safe defaults for new development registrations
+projects/<name>/.docker/         Project-owned Dockerfiles, Compose, and PHP/Nginx settings
+docker/stacks/                   Private generated runtime and volume ownership state
 ```
 
-```text
-.
-├── Makefile                      Developer commands
-├── scripts/
-│   ├── workspace                 Setup and prerequisite checks
-│   └── projects                  Registration and configuration generation
-├── docker/
-│   ├── .env.example              Local infrastructure settings template
-│   ├── docker-compose.yml        Shared services and optional tools
-│   ├── php/                      PHP image recipe and shared ini defaults
-│   └── nginx/base.conf           Shared routing and Docker DNS configuration
-├── projects/<name>/
-│   ├── .env                      Application and Docker workspace settings (ignored)
-│   ├── .env.example              Safe defaults for fresh checkouts
-│   ├── dev/php.ini               Project PHP settings
-│   ├── dev/logs/                 Project debug logs (ignored by Git)
-│   └── …                         Application source
-└── tests/test_workspace.py       Configuration and preservation checks
-```
+Edit a project's `.docker/Dockerfile` for its PHP extensions and
+`.docker/compose.override.yml` for additional services. Project-owned files are
+copied once and never overwritten automatically. Their duplication is intentional:
+changing one project must not change another. Template fixes must be reviewed and
+applied to existing projects individually.
 
-Generated Compose, Nginx, and SQL files are ignored by Git. MariaDB persists in a Docker volume; Redis persists in `docker/data/redis`. Local `.env` files, backups, and IDE settings are also ignored.
+Keep `.env`, `.docker/infra.*.env`, runtime files, and backups private. Production
+images exclude dotenv credentials and logs. New production limits are sized as a
+starting point for two light Laravel projects on 4 vCPU/8 GB RAM; see the production
+guide for the budget and optional worker example.
 
-## Further reading
-
-- [Project guide](PROJECT_GUIDE.md): configuration, framework setup, daily work, troubleshooting, and data recovery.
-- [Code review](docs/CODE_REVIEW.md): reviewed files, resolved issues, validation, and remaining limitations.
-
-This workspace is configured for local development with HTTP and PHP error display enabled. Database credentials and Redis are shared across projects. Node tooling, HTTPS, application workers, and application-specific migrations are configured separately when needed.
+Former shared-stack users must follow the [data migration procedure](docs/PRODUCTION.md#migrate-an-existing-shared-stack)
+before switching traffic. No existing data is moved or deleted automatically.

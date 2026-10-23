@@ -1,265 +1,168 @@
-# Developer Project Guide
+# Configuration and customization
 
-This guide explains how to initialize the workspace, create or register an application, and work with its runtime. Run host commands from the repository root unless a step says to run inside a container.
+The Makefile is the supported interface. Every command delegates to the single
+`scripts/stacks.py` CLI. Settings are read literally from dotenv files; shell
+expressions and variable interpolation are never executed by the workspace parser.
+Laravel still interprets its own application environment normally.
 
-## 1. Initialize your environment
+## Ownership and settings
 
-Install the requirements listed in [README.md](README.md), start Docker, and run:
+Registration preserves existing application code and environment values. External
+sources are linked under `projects/<name>`, with Docker files inside the actual
+application's `.docker/` directory. Failed registration restores existing `.env`
+bytes and removes only newly created registration files and links.
 
-```sh
-make setup
-```
-
-Setup checks Docker, Compose, Make, and daemon access. It preserves an existing `docker/.env`, creates one from the example when missing, and generates configuration from `projects/*/.env`. A missing `.env` is copied from the project’s `.env.example`; existing `.env` files take priority and are preserved.
-
-Review `docker/.env` before starting containers:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `COMPOSE_PROJECT_NAME` | `php-workspace` | Compose stack, network, and volume prefix |
-| `NGINX_HTTP_PORT` | `80` | Host HTTP port |
-| `MARIADB_PORT` | `3306` | Host MariaDB port |
-| `REDIS_PORT` | `6380` | Host Redis port; containers use `6379` |
-| `PHPMYADMIN_PORT` | `8081` | Optional browser database tool |
-| `MARIADB_ROOT_PASSWORD` | `root` | Shared development root credential |
-
-Keep credentials in local `.env` files. Changing `MARIADB_ROOT_PASSWORD` in this file does not change an account in an already initialized database volume. Update that account deliberately through MariaDB and then update local application settings.
-
-Keep `COMPOSE_PROJECT_NAME` stable once you have data: changing it selects a different named MariaDB volume. If running separate workspace clones, use unique stack names and host ports. Docker must be allowed to mount any external source directory you register.
-
-## 2. Create or register a project
-
-Supported versions in the generator: **7.4, 8.1, 8.3, and 8.4**. Choose the version required by the application and its Composer dependencies.
-
-```sh
-make project-add NAME=exampleapp PHP=8.4
-```
-
-Names and database names must start with a lowercase letter and contain only lowercase letters, numbers, or underscores. Shared service names such as `nginx`, `mariadb`, and `redis` are reserved. Underscores become hyphens in the default hostname: `my_app` uses `my-app.local`.
-
-| Registration field | Default for `exampleapp` | Meaning |
-| --- | --- | --- |
-| `PROJECT_NAME` | `exampleapp` | PHP Compose service name |
-| `PROJECT_PATH` | `projects/exampleapp` | Source path, relative to workspace root or absolute |
-| `PHP_VERSION` | Required | PHP-FPM image version |
-| `HOSTNAME` | `exampleapp.local` | Unique Nginx hostname |
-| `DATABASE` | `exampleapp` | Database to create on the shared MariaDB server |
-| `DOCUMENT_ROOT` | `.` | Web directory relative to source root; commonly `public` |
-
-A new default project receives a small runtime-check endpoint and application environment templates. To create a starter with a public web directory:
-
-```sh
-make project-add NAME=exampleapp PHP=8.4 DOCUMENT_ROOT=public
-```
-
-For an existing application:
-
-```sh
-make project-add NAME=api PHP=8.4 \
-  PROJECT_PATH=/absolute/path/to/api \
-  DOCUMENT_ROOT=public HOST=api.local DB=api
-```
-
-Custom source paths must already exist, and an existing application's document root must exist. Quote paths containing spaces. Registration is stored in the application’s `.env` alongside its Laravel settings. Existing values are preserved and missing workspace fields are appended. External and nested applications are linked at `projects/<name>` so the generator discovers their actual `.env`; no separate registration file is created. For new projects, the generator creates the chosen web directory. `DOCUMENT_ROOT` accepts `.` or relative segments such as `public` and `web/public`; absolute paths and traversal are rejected.
-
-Example registration:
-
-```sh
-WORKSPACE_PROJECT_NAME=api
-WORKSPACE_PHP_VERSION=8.4
-WORKSPACE_HOSTNAME=api.local
-DB_DATABASE=api
-WORKSPACE_DOCUMENT_ROOT=public
-WORKSPACE_HTTP_PORT=8090
-```
-
-`WORKSPACE_*` assignments in `projects/<name>/.env` configure Docker. `DB_DATABASE` supplies the application database name and database creation target. The source path comes from the containing directory (resolving external directory links). The generator reads these assignments as data and never executes dotenv content. Files without `WORKSPACE_PROJECT_NAME` are skipped. `.env.example` provides safe bootstrap defaults only when `.env` is absent; edit `.env` to change runtime settings.
-
-Use the framework's public directory when it has one. With `DOCUMENT_ROOT=.`, non-hidden source files are within the web root. Generated Nginx configuration denies hidden paths and `project.env`; it does not classify every application file as private.
-
-Each application supports its hostname on shared port `80` and its dedicated
-`http://localhost:port` URL. `WORKSPACE_HTTP_PORT` in `projects/<name>/.env` controls the
-dedicated port; registration allocates an unused workspace port starting at `8083`,
-or accepts `HTTP_PORT=8090` with `make project-add`. Apply changes with
-`make project-up NAME=api`. Ports `8081` and `8082` are reserved for phpMyAdmin
-and itechorbit. Keep chosen ports free of other host services.
-Use `make project-list` to see each assignment. Only hostname URLs need hosts entries.
-
-## 3. Configure application connections
-
-Containers use these addresses regardless of host port overrides:
-
-| Setting | Value |
+| Application `.env` setting | Meaning |
 | --- | --- |
-| Database host / port | `mariadb` / `3306` |
-| Database name | Project's `DATABASE` |
-| Database username | `root` by default |
-| Database password | `MARIADB_ROOT_PASSWORD` from `docker/.env` |
-| Redis host / port | `redis` / `6379` |
+| `WORKSPACE_PROJECT_NAME` | Stable lowercase name matching `projects/<name>`; maximum 32 characters; `gateway` is reserved |
+| `WORKSPACE_PHP_VERSION` | Default: 8.5; development: 7.4, 8.1, 8.3, 8.4, 8.5; production: 8.3, 8.4, 8.5 |
+| `WORKSPACE_HOSTNAME` | Canonical hostname, without scheme, port, or path |
+| `WORKSPACE_DOMAIN_ALIASES` | Optional space-separated hostnames redirecting to the canonical hostname |
+| `WORKSPACE_DOCUMENT_ROOT` | Relative web directory; use `public` for Laravel |
+| `WORKSPACE_HTTP_PORT` | Optional development-only localhost port; ignored in production |
+| `WORKSPACE_IMAGE_TAG` | Project image tag, default `current`; use release tags in production |
+| `WORKSPACE_WRITABLE_PATHS` | Existing relative directories outside the public root, separated by spaces |
+| `WORKSPACE_STORAGE_VOLUME` / `WORKSPACE_CACHE_VOLUME` | Optional existing Laravel storage/cache volumes to adopt explicitly |
 
-Application `.env` and `.env.example` templates follow Laravel naming for application, logging, database, session, filesystem, queue, cache, Redis, and mail settings. `DB_CONNECTION=mysql` selects the MariaDB-compatible driver; database and Redis hosts point to the Docker services. File sessions/cache and synchronous queues work without extra tables or workers. `CACHE_STORE` is used by newer Laravel versions; `CACHE_DRIVER` supports Laravel 10 and earlier. `REDIS_CLIENT=predis` requires `predis/predis` if Redis is used. `APP_KEY` and `DB_PASSWORD` are intentionally blank in templates: generate the key with `php artisan key:generate` for Laravel and set the local database password to match `docker/.env`. New project templates use the registered hostname for `APP_URL`; existing application values are preserved when workspace fields are appended during registration.
+Set `APP_URL` to the canonical URL. Canonical names and aliases must be lowercase
+literal DNS hostnames; URLs, wildcard names, IP addresses, and duplicate mappings
+are rejected. Production requires public hostnames. Locally, add each used name to
+`/etc/hosts`. Local aliases redirect over HTTP, including the configured gateway
+port; production aliases redirect over HTTPS. Both use HTTP 308, preserving the
+request method, path, and query string.
 
-Application connections are loaded from the project’s `.env` by the application. The generated PHP service does not override them with process environment variables. Clear cached Laravel configuration after changing application settings when required.
+Each stack resolves `mariadb:3306` and `redis:6379` to its own containers. Configure
+an explicit non-root `DB_USERNAME`, `DB_PASSWORD`, and `REDIS_PASSWORD`. Generated
+new-project defaults are development-only. Existing application values are preserved
+and must be updated explicitly when migrating from shared/root access. Database
+names/users may repeat between projects because database servers are separate.
 
-Plain PHP does not load `.env` files automatically. Use the application's environment loader or explicitly configured process settings. The installed extensions include `mysqli` and `pdo_mysql`; a PHP Redis extension is not installed, so use an application-compatible client library or add the required extension to the image.
+The private `.docker/infra.<environment>.env` contains an independently generated
+MariaDB root password and this project's resource limits. Existing private files
+are never overwritten. Changing a file's password does not alter initialized
+MariaDB accounts; rotate accounts explicitly and update the corresponding file.
 
-MariaDB is shared and uses one root account; a separate database does not provide permission isolation. Redis is shared too: configure distinct application key prefixes or logical databases as appropriate.
+## What to edit
 
-## 4. Start and verify
-
-```sh
-make project-up NAME=api
-```
-
-This regenerates validated configuration, builds the selected PHP runtime, starts it and the shared services, reloads Nginx, and creates any missing project databases. Other PHP projects are not selected for rebuilding. Initial builds can take several minutes; subsequent builds reuse Docker's cache.
-
-Add the hostname to your hosts file:
-
-```text
-127.0.0.1 api.local
-```
-
-Open `http://api.local`, or check routing directly:
-
-```sh
-curl -H 'Host: api.local' http://127.0.0.1/
-```
-
-If `NGINX_HTTP_PORT=8090`, use `http://api.local:8090` or `http://127.0.0.1:8090/`.
-
-Check the running runtime:
-
-```sh
-make shell PROJECT=api
-# Inside the PHP container:
-php -v
-php --ini
-php -r 'echo ini_get("memory_limit"), PHP_EOL;'
-composer --version
-exit
-```
-
-A pre-existing application requires its own installation steps after infrastructure starts. Within its container, run `composer install`, create its application key if required, and run its documented migrations. If you register an empty existing directory, the generator preserves it rather than inserting a starter endpoint.
-
-## 5. Daily development
-
-Edit source on the host; bind mounts make changes available in the container. Run PHP and Composer commands inside the selected container to use the application's actual runtime and extensions:
-
-```sh
-make shell PROJECT=api
-composer install
-# Run your application's CLI and test commands here.
-exit
-make ps
-make logs
-```
-
-The image includes Composer, curl, Git, zip/unzip, and a database client. It does not include Node/npm, a queue worker, or a scheduler. Applications requiring frontend assets or background jobs need their own documented tools/services.
-
-`make up` starts all registered projects. `make down` stops the stack and retains persistent data. `make restart` restarts existing containers; it does not apply new image builds or volume mounts. `make build` builds PHP images but does not recreate running containers.
-
-To change PHP versions, edit `WORKSPACE_PHP_VERSION` in `projects/<name>/.env` and run `make project-up NAME=api`. Recheck Composer dependencies for the new runtime.
-
-To change a hostname, database, or document root, edit the project’s `.env` and run `make project-up NAME=api`. Update the hosts file and `APP_URL` when changing the hostname. Change an external source path by updating its directory link under `projects/`. Changing `DB_DATABASE` creates a new database; it does not move existing data.
-
-## 6. Customize PHP and system packages
-
-Shared settings live in `docker/php/php.ini`: memory `512M`, upload and request limits `128M`, execution time `300` seconds, error display on, and timezone `Asia/Dhaka`.
-
-For project-only overrides, create `dev/php.ini` inside the actual application source directory:
-
-```ini
-memory_limit = 1024M
-upload_max_filesize = 256M
-post_max_size = 256M
-log_errors = On
-error_log = /var/www/html/dev/logs/php-error.log
-```
-
-Then run:
-
-```sh
-make project-restart NAME=api
-```
-
-Each project writes PHP errors to `dev/logs/php-error.log` inside its source
-folder. Setup creates a writable log directory; generated Nginx routes deny
-web access to `dev/`. Logs are ignored by Git. Plain PHP application code can
-use `error_log()` for debug messages. The itechorbit source is in
-`projects/itechorbit`, with `WORKSPACE_DOCUMENT_ROOT=.` in `projects/itechorbit/.env`. Run
-`make project-up NAME=itechorbit` to start that workspace project.
-For projects with existing Laravel runtime volumes, `WORKSPACE_STORAGE_VOLUME`
-and `WORKSPACE_CACHE_VOLUME` adopt those initialized Docker volumes as external
-volumes, preserving sessions, uploads, and caches.
-When these two settings are present, source mounts read-only and the generator
-leaves the application's environment and log directories intact.
-
-The project file mounts as `zz-project.ini`, after shared `zz-custom.ini`. Recreating the container picks up new mounts and settings. `make sync` alone does not apply them to a running PHP process.
-
-Nginx also imposes a request-body limit, configured to `128m` to match the shared PHP defaults. For larger uploads, change `client_max_body_size` in `docker/nginx/base.conf` along with PHP upload/request limits and apply it with `make up`.
-
-Add permanent system packages or PHP extensions in `docker/php/Dockerfile`, then rebuild with `make project-up NAME=api`. The recipe is shared across PHP versions, so verify compatibility with affected versions. Manual installations in a running container disappear on recreation.
-
-## 7. Database tools and persistence
-
-```sh
-make tools       # phpMyAdmin; default http://localhost:8081
-make mariadb     # MariaDB root CLI
-make redis-cli   # Redis CLI
-```
-
-`make mysql` is an alias for `make mariadb`. Desktop database clients connect to `127.0.0.1`, the configured `MARIADB_PORT`, username `root`, and the local root password. Container applications use `mariadb:3306` instead.
-
-MariaDB persists in the Compose-managed `mariadb_data` volume, normally named `php-workspace_mariadb_data`. Redis AOF files persist in `docker/data/redis`. Neither is source code. `docker/backups/` is ignored and can hold your logical SQL backups. `make down` retains these stores; Docker volume deletion and `down -v` can remove MariaDB data.
-
-Back up important databases with a logical SQL export using your database client or phpMyAdmin, and verify a restore into a separate database before deleting old data. Do not reuse MySQL's raw storage files as MariaDB data. Historical migration details and backups are local to the original workstation and are not prerequisites for a fresh clone.
-
-To unregister a project, remove its `WORKSPACE_PROJECT_NAME` assignment from `projects/<name>/.env`, then run `make up`. This removes stale Nginx configuration and orphan containers; source files and databases are not deleted. Avoid changing a project name casually because it identifies its runtime service.
-
-## 8. Troubleshoot and contribute
-
-| Symptom | Check or action |
+| File | Purpose |
 | --- | --- |
-| Docker connection failure | Run `make doctor`; start Docker and check socket access |
-| Host port already in use | Change the corresponding port in `docker/.env`, then `make up` |
-| Hostname does not resolve | Add the hosts entry, or test with curl's `Host` header |
-| HTTP 404 | Check hostname, `DOCUMENT_ROOT`, and the actual entry-point file |
-| HTTP 502 | Check `make ps` and PHP container logs; start the selected project |
-| Database access denied | Check the application password and the account in the existing volume |
-| PHP settings unchanged | Run `make project-restart NAME=api`, then inspect `php --ini` |
-| Upload returns HTTP 413 | Set Nginx `client_max_body_size` as well as PHP upload/request limits |
-| Mounted directory is unavailable | Verify the path and Docker Desktop file-sharing permissions |
+| `.docker/Dockerfile` | This project's PHP extensions, packages, and build stages |
+| `.docker/nginx.Dockerfile` | Nginx image and production public assets |
+| `.docker/compose.yml` | Project-owned base service configuration |
+| `.docker/compose.override.yml` | Common project-only additions/overrides |
+| `.docker/compose.override.production.yml` | Optional production-specific override |
+| `.docker/compose.override.development.yml` | Optional development-specific override |
+| `.docker/php.ini`, `.docker/production.ini` | Project-owned PHP settings |
+| `.docker/fpm.conf`, `.docker/production-fpm.conf` | PHP-FPM settings |
+| `.docker/nginx.conf.template` | Routing rules for this project's Nginx |
+| `.docker/*Dockerfile.dockerignore` | Build exclusions; keep credentials/log exclusions |
 
-Before submitting workspace changes:
+Scaffolding copies missing files from `docker/templates/` and the base Compose
+template. Existing files remain independent. Keep the development/production build
+targets and FPM healthcheck contracts when editing Dockerfiles. Official MariaDB/
+Redis image layers may share Docker's cache, while containers and storage remain
+separate. Existing projects require explicit review/application of later template
+or security updates.
+
+Production copies a prepared application release into project-specific images;
+it does not install Composer dependencies or build frontend assets automatically.
+Prepare locked dependencies and assets in CI or a project-specific build stage.
+Root `.dockerignore` rules are copied into Dockerfile-specific ignore files only
+at initial scaffolding; apply later changes to those files explicitly.
+
+Generated files under `docker/stacks/<environment>/<project>/` are private and
+replaced by synchronization. Do not edit them or delete the volume ownership
+registry during cleanup. `dev/php.ini` remains an optional per-project compatibility
+override, loaded before production safety settings.
+
+## Add services to one project
+
+Example `.docker/compose.override.yml`:
+
+```yaml
+services:
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+volumes:
+  rabbitmq_data: {}
+```
+
+Configure the service's own credentials using project-private settings. Its default
+network is this project's backend, and its volume is namespaced to this stack.
+Project overrides cannot use shared/external networks, unapproved external volumes,
+host namespaces, privileged containers, added capabilities, devices, host sockets,
+or bind mounts outside the project. Secret/config files must belong to the project.
+Additional build contexts and host/shared build networks are unsupported.
+Production host ports and writable host bind mounts are rejected; development ports
+must bind to `127.0.0.1`. These checks guard the supported workflow, not users who
+already control the Docker daemon.
+
+All override paths resolve from the application root, not `.docker/`. Merge order:
+project base Compose, generated environment overlay, common override, then optional
+environment-specific override. Project settings and generated identity/path values
+take precedence over exported shell values; application dotenv keys cannot redirect
+the Docker transport or override Compose controls.
 
 ```sh
-make validate
-make test
+make validate ENV=production NAME=api
+make project-up ENV=production NAME=api
 ```
 
-Tests use temporary workspace copies and Compose configuration validation. They do not start containers or modify your real project data. They require Python 3, a local PHP CLI, and Compose. Application tests remain the responsibility of each project.
+Only this project is built and reconciled. Removed services are removed within its
+Compose identity. Other projects and the gateway are untouched.
 
-Edit registration files and source configuration, then regenerate. Do not edit `docker/generated/` or `docker/nginx/generated/` directly. Generated output is validated with Compose before replacing live files; Nginx syntax and runtime behavior need separate verification when changing routing.
+## Optional Laravel worker and scheduler
 
-Nginx reads application files at `/var/www/projects/<name>` and PHP-FPM reads them at `/var/www/html`. The generator maps script paths and document roots between those mounts. Use `__DIR__` for PHP includes so they resolve relative to the executing file.
+Scaffolding provides `.docker/compose.override.production.yml.example`. Once the
+project is a prepared Laravel application with
+`WORKSPACE_WRITABLE_PATHS=storage bootstrap/cache`, copy the example to
+`compose.override.production.yml` **only if that file does not already exist**.
+Otherwise merge its worker service into the existing override.
 
-Commit safe templates, registrations, and application lockfiles. Do not commit `.env`, generated configuration, database files, logs, or dependencies. Consult [the code review](docs/CODE_REVIEW.md) for known limitations and verification scope.
+The optional worker uses this project's PHP image and runtime volumes, runs as
+`www-data`, rotates logs, and is limited to 256 MiB/0.5 CPU. Its PHP memory ceiling
+is 192 MB and it recycles between jobs above 128 MB or after one hour. Configure the
+application queue driver and credentials; keep Laravel's queue `retry_after` longer
+than the worker's 60-second timeout. Tune the budget for heavier jobs. Workers are
+not enabled by default and should restart after release/configuration updates.
 
-## Reusable project request
+A host cron example for a prepared Laravel project:
 
-```text
-Read README.md and PROJECT_GUIDE.md, then create or register a project:
-Name: exampleapp
-PHP: 8.4
-Source path: projects/exampleapp
-Document root: public
-Hostname: exampleapp.local
-Database: exampleapp
-Optional PHP settings:
-  memory_limit = 1024M
-  upload_max_filesize = 256M
-  post_max_size = 256M
-Preserve existing application files and database data. Validate the configuration,
-start the requested project when Docker is available, and verify its actual PHP
-version and requested ini values. Report the URL and hosts entry needed.
+```cron
+* * * * * cd /srv/php-workspace && WORKSPACE_ENV=production python3 scripts/stacks.py compose api exec -T -u www-data php php artisan schedule:run >> /var/log/api-scheduler.log 2>&1
 ```
+
+Set cron's PATH and log permissions/rotation. The CLI supports inspection and
+application commands, for example:
+
+```sh
+WORKSPACE_ENV=production python3 scripts/stacks.py compose api config --quiet
+WORKSPACE_ENV=production python3 scripts/stacks.py compose api exec -T -u www-data php php artisan queue:restart
+```
+
+Use lifecycle Make commands for builds/startup/shutdown; direct CLI Compose verbs
+are limited to inspection and `exec` so validation is retained.
+
+## Gateway and locks
+
+`gateway-up` starts Caddy, attaches it to each project's separate edge network,
+and reloads routes. It mounts no application source/secrets and has no direct
+backend connection. `gateway-sync` validates new routes and reloads without
+recreating Caddy; gateway resource/port changes need explicit `gateway-up` and can
+recreate it. Alias collisions or invalid configuration preserve active gateway files.
+
+`project-down` retains its external edge network and data. A stopped project's
+canonical domain returns 502; other domains keep working. `down-all` does not stop
+the gateway. `gateway-down` is an explicit action affecting all public routes.
+
+Generation uses a workspace lock; deployments use project-specific locks. Logs and
+interactive shells do not hold configuration locks. If a process is forcibly
+killed, the error reports its actual lock path. Remove a stale lock only after
+confirming its command is no longer running.
+
+See the [production guide](docs/PRODUCTION.md) for real-domain DNS, HTTPS, deployment,
+resource budgeting, SMTP, backups, and migration.

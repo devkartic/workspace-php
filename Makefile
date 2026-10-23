@@ -1,7 +1,6 @@
-ENV_FILE := $(if $(wildcard docker/.env),docker/.env,docker/.env.example)
-PROJECTS := docker/generated/projects.compose.yml
-COMPOSE = docker compose --env-file $(ENV_FILE) -f docker/docker-compose.yml -f $(PROJECTS)
-# Only name and PHP are required; these defaults keep project creation consistent.
+ENV ?= development
+export WORKSPACE_ENV := $(ENV)
+STACK = python3 scripts/stacks.py
 PROJECT_PATH ?= projects/$(NAME)
 HOST ?= $(subst _,-,$(NAME)).local
 DB ?= $(NAME)
@@ -9,91 +8,53 @@ DOCUMENT_ROOT ?= .
 HTTP_PORT ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup doctor sync project-add project-list project-up project-restart up down restart build ps logs validate tools shell mariadb mysql redis-cli test
-
+.PHONY: help setup doctor sync project-add project-list project-config project-up project-down project-build project-restart project-logs project-ps validate up down build restart logs ps shell mariadb mysql redis-cli backup restore gateway-up gateway-sync gateway-down gateway-logs up-all down-all test
 help:
 	@printf '%s\n' \
-	  'make setup         Check prerequisites, create local Docker env, and generate configuration' \
-	  'make doctor        Check required tools and Docker daemon access' \
-	  'make sync          Regenerate Compose, Nginx, and database setup from project definitions' \
-	  'make project-add NAME=api PHP=8.4  Create a project (optional PROJECT_PATH, HOST, DB, DOCUMENT_ROOT, HTTP_PORT)' \
-	  'make project-list  List registered projects, PHP versions, hosts, and databases' \
-	  'make project-up NAME=api  Start or rebuild one project and shared services' \
-	  'make project-restart NAME=api  Apply PHP ini changes to one project' \
-	  'make up            Start shared services and all registered projects' \
-	  'make down          Stop the stack (keeps database and Redis data)' \
-	  'make build         Rebuild all PHP images' \
-	  'make logs          Follow all service logs' \
-	  'make ps            Show service status' \
-	  'make validate      Validate the Compose configuration' \
-	  'make tools         Start optional phpMyAdmin at :8081' \
-	  'make shell PROJECT=dashboard  Open a project container shell' \
-	  'make mariadb       Open a MariaDB root shell (make mysql is an alias)' \
-	  'make redis-cli     Open Redis CLI' \
-	  'make test          Run isolated regression checks'
-
+	  'make setup / doctor                 Initialize/check prerequisites' \
+	  'make project-add NAME=api            Create with the tested stable PHP default (optional PHP=8.4)' \
+	  'make project-config NAME=api        Scaffold project-owned Docker configuration' \
+	  'make project-up NAME=api            Build/start only this project and its services' \
+	  'make project-down NAME=api          Stop only this project (keep volumes)' \
+	  'make project-build NAME=api         Build only this project images' \
+	  'make project-restart NAME=api       Restart only this project containers' \
+	  'make project-logs / project-ps NAME=api' \
+	  'make validate NAME=api              Generate/validate one project including overrides' \
+	  'make sync                          Validate all selected projects; start nothing' \
+	  'make gateway-up / gateway-sync      Start gateway / gracefully reload routes' \
+	  'make gateway-down                  Stop the shared gateway explicitly' \
+	  'make up-all / down-all              Explicitly operate on all selected projects' \
+	  'make shell / mariadb / redis-cli NAME=api' \
+	  'make backup NAME=api                Write a private SQL backup' \
+	  'make restore NAME=api FILE=/path/to/backup.sql' \
+	  'Append ENV=production for production; see docs/PRODUCTION.md' \
+	  'make test                          Run configuration regressions without containers'
 setup:
-	./scripts/workspace setup
-
+	$(STACK) setup
 doctor:
-	./scripts/workspace doctor
-
+	$(STACK) doctor
 sync:
-	./scripts/projects sync
-
+	$(STACK) sync
 project-add:
-	@test -n "$(NAME)" -a -n "$(PHP)" || (echo 'Usage: make project-add NAME=api PHP=8.4'; exit 2)
-	./scripts/projects add "$(NAME)" "$(PROJECT_PATH)" "$(PHP)" "$(HOST)" "$(DB)" "$(DOCUMENT_ROOT)" "$(HTTP_PORT)"
-
+	@test -n "$(NAME)" || (echo 'Usage: make project-add NAME=api [PHP=8.4]'; exit 2)
+	$(STACK) add "$(NAME)" "$(PROJECT_PATH)" "$(PHP)" "$(HOST)" "$(DB)" "$(DOCUMENT_ROOT)" "$(HTTP_PORT)"
 project-list:
-	./scripts/projects list
-
-# Start only the selected PHP runtime; other projects keep their own versions.
-project-up:
-	./scripts/projects check "$(NAME)"
-	./scripts/projects sync
-	$(COMPOSE) up -d --build $(NAME) nginx mariadb redis
-	$(COMPOSE) exec -T nginx nginx -s reload
-	$(COMPOSE) --profile init run --rm database-init
-
-# Recreate to pick up a newly added ini mount as well as edits to an existing one.
-project-restart:
-	./scripts/projects check "$(NAME)"
-	./scripts/projects sync
-	$(COMPOSE) up -d --build --no-deps --force-recreate $(NAME)
-
-up:
-	./scripts/projects sync
-	$(COMPOSE) up -d --build --remove-orphans
-	$(COMPOSE) exec -T nginx nginx -s reload
-	$(COMPOSE) --profile init run --rm database-init
-
-down:
-	$(COMPOSE) down
-restart:
-	$(COMPOSE) restart
-build:
-	./scripts/projects sync
-	$(COMPOSE) build
-ps:
-	$(COMPOSE) ps
-logs:
-	$(COMPOSE) logs -f
-validate:
-	./scripts/projects sync
-	$(COMPOSE) config --quiet
-tools: sync
-	$(COMPOSE) --profile tools up -d phpmyadmin
-shell:
-	@test -n "$(PROJECT)" || (echo 'Usage: make shell PROJECT=dashboard'; exit 2)
-	$(COMPOSE) exec $(PROJECT) sh
-mariadb:
-	$(COMPOSE) exec mariadb sh -c 'MYSQL_PWD="$$MARIADB_ROOT_PASSWORD" exec mariadb -uroot'
-
-# Keep the old shortcut usable while the server and actual CLI are MariaDB.
+	$(STACK) list
+project-config:
+	$(STACK) scaffold "$(NAME)"
+project-up project-down project-build project-restart project-logs project-ps validate shell mariadb redis-cli backup:
+	$(STACK) $@ "$(NAME)"
+restore:
+	$(STACK) restore "$(NAME)" "$(FILE)"
+gateway-up gateway-sync gateway-down gateway-logs up-all down-all:
+	$(STACK) $@
+# Compatibility aliases still require NAME. No unqualified command operates globally.
+up: project-up
+down: project-down
+build: project-build
+restart: project-restart
+logs: project-logs
+ps: project-ps
 mysql: mariadb
-redis-cli:
-	$(COMPOSE) exec redis redis-cli
-
 test:
 	python3 -m unittest discover -s tests -v

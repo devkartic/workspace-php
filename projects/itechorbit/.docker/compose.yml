@@ -1,0 +1,107 @@
+# Scaffold template: copied once into each project's .docker/compose.yml.
+# Use make project-up NAME=...; this file is not a shared application stack.
+name: ${STACK_NAME:?Use the project commands}
+
+x-runtime: &runtime
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  php:
+    <<: *runtime
+    image: ${STACK_NAME}-php:${IMAGE_TAG:-current}
+    build:
+      context: ${PROJECT_SOURCE}
+      dockerfile: .docker/Dockerfile
+      target: ${BUILD_TARGET}
+      args: {PHP_VERSION: "${WORKSPACE_PHP_VERSION}"}
+    working_dir: /var/www/html
+    cpus: ${PHP_CPUS:-1}
+    mem_limit: ${PHP_MEMORY:-1g}
+    healthcheck:
+      test: [CMD, fpm-healthcheck]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nginx:
+    <<: *runtime
+    image: ${STACK_NAME}-nginx:${IMAGE_TAG:-current}
+    build:
+      context: ${PROJECT_SOURCE}
+      dockerfile: .docker/nginx.Dockerfile
+      target: ${BUILD_TARGET}
+      args: {DOCUMENT_ROOT: "${WORKSPACE_DOCUMENT_ROOT}"}
+    environment:
+      DOCUMENT_ROOT: ${WORKSPACE_DOCUMENT_ROOT}
+      FASTCGI_HTTPS: ${FASTCGI_HTTPS}
+      NGINX_ENVSUBST_FILTER: '^(DOCUMENT_ROOT|FASTCGI_HTTPS)$$'
+    cpus: ${NGINX_CPUS:-0.5}
+    mem_limit: ${NGINX_MEMORY:-256m}
+    networks:
+      default: {}
+      edge:
+        aliases: ["${PROJECT_NAME}-web"]
+    depends_on:
+      php: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -qO-, 'http://127.0.0.1:8080/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mariadb:
+    <<: *runtime
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?Project root password required}
+    volumes: [database:/var/lib/mysql]
+    cpus: ${DATABASE_CPUS:-1}
+    mem_limit: ${DATABASE_MEMORY:-1g}
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  database-init:
+    image: mariadb:11.4
+    profiles: [init]
+    restart: "no"
+    environment:
+      MYSQL_PWD: ${MARIADB_ROOT_PASSWORD}
+    volumes:
+      - ${RUNTIME_PATH}/databases.sql:/work/databases.sql:ro
+      - ${RUNTIME_PATH}/verify-databases.sh:/work/verify-databases.sh:ro
+    entrypoint: [sh, -ec, 'mariadb -h mariadb -uroot < /work/databases.sql && sh /work/verify-databases.sh']
+    depends_on:
+      mariadb: {condition: service_healthy}
+
+  redis:
+    <<: *runtime
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set the application Redis password}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-128mb}
+    command: [sh, -ec, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD" --maxmemory "$$REDIS_MAXMEMORY" --maxmemory-policy noeviction']
+    volumes: [redis_data:/data]
+    cpus: ${REDIS_CPUS:-0.5}
+    mem_limit: ${REDIS_MEMORY:-256m}
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -qx PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  default:
+    name: ${STACK_NAME}_backend
+  edge:
+    external: true
+    name: ${STACK_NAME}_edge
+
+volumes:
+  database: {}
+  redis_data: {}
