@@ -2,7 +2,8 @@
 docker/.env
 docker/generated/
 docker/nginx/generated/
-projects/*/dev/logs/*.log
+projects/*/logs/*
+!projects/*/logs/.gitkeep
 
 # Local database/cache state and macOS metadata
 docker/data/

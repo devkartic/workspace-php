@@ -7,6 +7,8 @@ server {
     index index.php index.html;
     server_tokens off;
     location / { try_files $uri $uri/ /index.php?$query_string; }
+    location = /logs { deny all; }
+    location ^~ /logs/ { deny all; }
     location = /dev { deny all; }
     location ^~ /dev/ { deny all; }
     location ~ /\. { deny all; }

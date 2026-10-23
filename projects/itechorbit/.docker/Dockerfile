@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 COPY .docker/php.ini /usr/local/etc/php/conf.d/zz-custom.ini
 COPY .docker/fpm.conf /usr/local/etc/php-fpm.d/zz-project.conf
+COPY .docker/prepare-logs /usr/local/bin/prepare-logs
 COPY .docker/fpm-healthcheck /usr/local/bin/fpm-healthcheck
 RUN chmod 755 /usr/local/bin/fpm-healthcheck
 WORKDIR /var/www/html

@@ -4,7 +4,7 @@ services:
   worker:
     image: ${STACK_NAME}-php:${IMAGE_TAG}
     user: www-data
-    command: [php, -d, memory_limit=192M, artisan, 'queue:work', '--sleep=3', '--tries=3', '--timeout=60', '--memory=128', '--max-time=3600']
+    command: [php, -d, error_log=/proc/self/fd/2, -d, memory_limit=192M, artisan, 'queue:work', '--sleep=3', '--tries=3', '--timeout=60', '--memory=128', '--max-time=3600']
     restart: unless-stopped
     stop_grace_period: 90s
     mem_limit: 256m

@@ -335,6 +335,39 @@ class WorkspaceTests(unittest.TestCase):
         result = self.stack('doctor', ok=False, env={'PATH': str(folder) + os.pathsep + os.environ['PATH']})
         self.assertIn('Cannot reach Docker', result.stderr)
 
+    def test_php_logs_use_project_local_mount_and_ignore_legacy_override(self):
+        app = self.root / 'projects/alpha'
+        (app / 'dev').mkdir()
+        (app / 'dev/php.ini').write_text('memory_limit=9M')
+        self.sync('alpha', 'beta')
+        for name in ('alpha', 'beta'):
+            config = self.resolved(name)
+            mounts = {m['target']: m for m in config['services']['php']['volumes']}
+            log = mounts['/var/log/project']
+            self.assertEqual(log['type'], 'bind')
+            self.assertEqual(log['source'], str((self.root / 'projects' / name / 'logs').resolve()))
+            self.assertFalse(log.get('read_only', False))
+            self.assertNotIn('/usr/local/etc/php/conf.d/zz-project.ini', mounts)
+
+    def test_logs_cannot_be_used_as_document_root(self):
+        (self.root / 'projects/alpha/logs').mkdir()
+        self.change('alpha', 'WORKSPACE_DOCUMENT_ROOT=public', 'WORKSPACE_DOCUMENT_ROOT=logs')
+        self.assertIn('logs cannot be the public document root', self.sync('alpha', ok=False).stderr)
+
+    def test_log_symlinks_are_rejected_without_modifying_target(self):
+        app = self.root / 'projects/alpha'
+        other = self.root / 'private'
+        other.mkdir()
+        (app / 'logs').symlink_to(other, target_is_directory=True)
+        self.assertIn('not a symlink', self.sync('alpha', ok=False).stderr)
+        (app / 'logs').unlink()
+        (app / 'logs').mkdir()
+        secret = other / 'secret'
+        secret.write_text('untouched')
+        (app / 'logs/php-error.log').symlink_to(secret)
+        self.assertIn('not a symlink', self.sync('alpha', ok=False).stderr)
+        self.assertEqual(secret.read_text(), 'untouched')
+
     def test_registration_defaults_to_php85_and_preserves_explicit_versions(self):
         if self.mode != 'development':
             self.skipTest('Registration uses development mode')

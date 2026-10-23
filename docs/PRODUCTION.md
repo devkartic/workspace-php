@@ -431,3 +431,46 @@ separate images/volumes/networks, cross-backend connection blocking, gateway hot
 attachment/reload, alias redirects and collision rollback, image secret exclusion,
 uploads, Redis authentication, backup/restore, and an independent worker rebuild/shutdown. It cleans up only its own
 resources and does not contact public certificate authorities.
+
+## PHP error log rotation
+
+Each project exposes PHP errors at its own `logs/php-error.log` on the host, including
+production. For itechorbit in the standard workspace location:
+
+```sh
+tail -f /srv/php-workspace/projects/itechorbit/logs/php-error.log
+```
+
+`make project-up ENV=production NAME=itechorbit` initializes the directory/file with
+PHP worker ownership before startup, without truncating existing logs. PHP errors
+are logged when `log_errors=On`, while production error display stays off. This is
+the sole supported writable production host bind mount; application code remains
+read-only. Laravel's `storage/logs` and Nginx container logging are unchanged.
+
+Install logrotate if needed (`sudo apt-get install -y logrotate`). Create
+`/etc/logrotate.d/php-workspace-itechorbit` as root, with:
+
+```text
+/srv/php-workspace/projects/itechorbit/logs/php-error.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su www-data www-data
+}
+```
+
+Use a separate entry with the correct absolute path for each project. Check the
+configuration without rotating files:
+
+```sh
+sudo logrotate --debug /etc/logrotate.d/php-workspace-itechorbit
+```
+
+Ubuntu's logrotate scheduler performs rotation; confirm its timer or cron is active.
+`copytruncate` preserves the file that PHP has open, with a small possibility of
+losing entries written during the copy/truncate window. Include these host log
+folders separately in backups when needed; they are not Docker volume data.

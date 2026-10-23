@@ -36,6 +36,16 @@ class ProductionTests(test_workspace.WorkspaceTests):
         (self.root / 'projects/alpha/.docker/compose.override.yml').write_text('services:\n  redis:\n    ports: ["6379:6379"]\n')
         self.sync('alpha', ok=False)
 
+    def test_writable_host_mount_exception_is_only_for_php_project_logs(self):
+        self.sync('alpha')
+        override = self.root / 'projects/alpha/.docker/compose.override.yml'
+        for service, source, target in [('php', './public', '/tmp/unsafe'),
+                                        ('nginx', './logs', '/var/log/project'),
+                                        ('php', './public', '/var/log/project')]:
+            with self.subTest(service=service, target=target):
+                override.write_text(f'services:\n  {service}:\n    volumes:\n      - {source}:{target}\n')
+                self.sync('alpha', ok=False)
+
     def test_no_production_example_bootstrap(self):
         extra = self.root / 'projects/example'
         extra.mkdir()

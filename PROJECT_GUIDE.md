@@ -72,8 +72,8 @@ at initial scaffolding; apply later changes to those files explicitly.
 
 Generated files under `docker/stacks/<environment>/<project>/` are private and
 replaced by synchronization. Do not edit them or delete the volume ownership
-registry during cleanup. `dev/php.ini` remains an optional per-project compatibility
-override, loaded before production safety settings.
+registry during cleanup. PHP configuration lives in `.docker/php.ini` and
+`.docker/production.ini`; the legacy `dev/php.ini` override is no longer loaded.
 
 ## Add services to one project
 
@@ -97,8 +97,8 @@ Project overrides cannot use shared/external networks, unapproved external volum
 host namespaces, privileged containers, added capabilities, devices, host sockets,
 or bind mounts outside the project. Secret/config files must belong to the project.
 Additional build contexts and host/shared build networks are unsupported.
-Production host ports and writable host bind mounts are rejected; development ports
-must bind to `127.0.0.1`. These checks guard the supported workflow, not users who
+Production host ports and writable host bind mounts are rejected except the PHP
+container's dedicated project `logs/` mount; development ports must bind to `127.0.0.1`. These checks guard the supported workflow, not users who
 already control the Docker daemon.
 
 All override paths resolve from the application root, not `.docker/`. Merge order:
@@ -166,3 +166,32 @@ confirming its command is no longer running.
 
 See the [production guide](docs/PRODUCTION.md) for real-domain DNS, HTTPS, deployment,
 resource budgeting, SMTP, backups, and migration.
+
+## PHP error logs
+
+Both environments write PHP errors to `logs/php-error.log` in the application root,
+mounted at `/var/log/project` in the PHP container. `make project-up` creates the
+folder/file before FPM starts, preserves existing contents, and sets ownership to
+`www-data` with directory mode 755 and file mode 644. The deployment user can read
+logs; administrative permissions may be needed to rotate/delete them on Linux.
+Symlink directories and log files are rejected. Do not replace this mount in overrides.
+
+```sh
+tail -f projects/itechorbit/logs/php-error.log
+```
+
+`log_errors=On` enables logging; `error_log` specifies the destination. FPM pins the
+same destination using `php_admin_value[error_log]`. Production keeps display of
+errors off. Laravel retains `storage/logs`; Nginx/FPM service diagnostics remain in
+container output. The optional queue-worker example also keeps CLI PHP errors in
+container output (`make project-logs NAME=itechorbit`, with `ENV=production` on VPS).
+PHP errors now go to the file rather than Docker output. `/logs/` is blocked by
+Nginx, and log contents are excluded from Git and image builds.
+
+For applications in separate Git repositories, also ignore `logs/*` there.
+
+New projects receive these settings automatically. Existing projects keep their
+independent `.docker` files: apply the logging settings, `prepare-logs` script and
+Dockerfile copy, Nginx deny rules, and build exclusions explicitly when upgrading.
+Move any historical `dev/logs/` files into `logs/` before removing the old directory.
+For production file rotation, see [the production guide](docs/PRODUCTION.md#php-error-log-rotation).

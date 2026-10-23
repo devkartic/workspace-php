@@ -139,3 +139,7 @@ guide for the budget and optional worker example.
 
 Former shared-stack users must follow the [data migration procedure](docs/PRODUCTION.md#migrate-an-existing-shared-stack)
 before switching traffic. No existing data is moved or deleted automatically.
+
+PHP errors are visible in each project's `logs/php-error.log` in both environments.
+The legacy `dev/php.ini` override has been removed; edit project-owned `.docker`
+configuration instead. See [PHP logging](PROJECT_GUIDE.md#php-error-logs) for details.

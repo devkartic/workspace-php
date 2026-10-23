@@ -165,6 +165,16 @@ def scaffold(source, created):
     write_new(target / f'infra.{MODE}.env', content, created)
 
 
+def validate_log_paths(source):
+    """Only a real project-local directory/file may receive PHP errors."""
+    directory = source / 'logs'
+    logfile = directory / 'php-error.log'
+    require(not directory.is_symlink() and (not directory.exists() or directory.is_dir()),
+            'Project logs must be a real directory, not a symlink')
+    require(not logfile.is_symlink() and (not logfile.exists() or logfile.is_file()),
+            'PHP error log must be a regular file, not a symlink')
+
+
 def project(n, created=None):
     require(n != 'gateway', "Project name 'gateway' is reserved for the shared gateway")
     require(valid_name(n), 'Specify a valid NAME (lowercase letters, numbers, underscores)')
@@ -172,12 +182,14 @@ def project(n, created=None):
         require(n in project_names(), f'{n} is not selected in PRODUCTION_PROJECTS')
     _, prefix = infra()
     source = (ROOT / 'projects' / n).resolve()
+    validate_log_paths(source)
     app = dotenv(source / '.env')
     require(app.get('WORKSPACE_PROJECT_NAME') == n, f'{n}: registration name must match projects/{n}')
     version = app.get('WORKSPACE_PHP_VERSION', '')
     require(version in PHP_VERSIONS[MODE], f'{n}: unsupported PHP version')
     public = app.get('WORKSPACE_DOCUMENT_ROOT', '.')
     require(public == '.' or relative(public), f'{n}: invalid document root')
+    require(public != 'logs' and not public.startswith('logs/'), f'{n}: logs cannot be the public document root')
     require((source / public).is_dir() and (source / public).resolve().is_relative_to(source), f'{n}: public directory must exist inside source')
     host, aliases = domains(app)
     db = app.get('DB_DATABASE', n)
@@ -263,7 +275,7 @@ def mount(source, target, readonly=False, kind='bind'):
 
 def overlay_config(p):
     source, app = p['source'], p['app']
-    services = {'php': {'volumes': []}, 'nginx': {'volumes': []}}
+    services = {'php': {'volumes': [mount(source / 'logs', '/var/log/project')]}, 'nginx': {'volumes': []}}
     volumes = {}
     if MODE == 'development':
         services['php']['volumes'].append(mount(source, '/var/www/html'))
@@ -275,8 +287,6 @@ def overlay_config(p):
     else:
         services['php'].update(read_only=True, tmpfs=['/tmp', '/usr/local/var/run'])
         services['php']['volumes'].append(mount(source / '.env', '/var/www/html/.env', True))
-    if (source / 'dev/php.ini').is_file():
-        services['php']['volumes'].append(mount(source / 'dev/php.ini', '/usr/local/etc/php/conf.d/zz-project.ini', True))
     paths = {value: None for value in p['writable']}
     if app.get('WORKSPACE_STORAGE_VOLUME'):
         paths.update({'storage': app['WORKSPACE_STORAGE_VOLUME'], 'bootstrap/cache': app['WORKSPACE_CACHE_VOLUME']})
@@ -335,12 +345,18 @@ def check_isolation(p, resolved):
                 require((p['source'] / dockerfile).resolve().is_relative_to(p['source']), f'{n}: Dockerfile must belong to this project')
                 require(service['build'].get('network', 'default') in {'default', 'none'} and not service['build'].get('additional_contexts'),
                         f'{n}: host/shared build networks and extra contexts are not supported')
+    logs = [v for v in resolved['services']['php'].get('volumes', []) if v['target'] == '/var/log/project']
+    require(len(logs) == 1 and logs[0]['type'] == 'bind'
+            and Path(logs[0]['source']) == p['source'] / 'logs' and not logs[0].get('read_only'),
+            'PHP must mount its own project logs directory writable at /var/log/project')
     if MODE == 'production':
         require(resolved['services']['php'].get('read_only'), 'Production PHP must have a read-only filesystem')
         for n, service in resolved['services'].items():
             for v in service.get('volumes', []):
                 if v['type'] == 'bind':
-                    require(v.get('read_only'), f'{n}: production host bind mounts must be read-only')
+                    log_mount = (n == 'php' and v['target'] == '/var/log/project'
+                                 and Path(v['source']) == p['source'] / 'logs')
+                    require(v.get('read_only') or log_mount, f'{n}: production host bind mounts must be read-only except PHP project logs')
                     require(v['target'] != '/var/www/html', 'Production source must be baked into its image')
 
 
@@ -535,6 +551,9 @@ def up(p):
             f"{p['name']}: configure explicit project database/Redis credentials in the application .env before startup")
     edge(p)
     compose(p, 'build')
+    validate_log_paths(p['source'])
+    (p['source'] / 'logs').mkdir(exist_ok=True)
+    compose(p, 'run', '--rm', '--no-deps', '--user', '0:0', '--entrypoint', 'sh', 'php', '/usr/local/bin/prepare-logs')
     compose(p, 'run', '--rm', '--no-deps', 'nginx', 'nginx', '-t')
     compose(p, 'up', '-d', '--wait', 'mariadb', 'redis')
     compose(p, 'run', '--rm', 'database-init')
