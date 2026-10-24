@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOURCE / 'scripts'))
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -58,6 +60,25 @@ class WorkspaceTests(unittest.TestCase):
     def change(self, n, old, new):
         path = self.root / f'projects/{n}/.env'
         path.write_text(path.read_text().replace(old, new))
+
+    def test_database_access_is_opt_in_and_project_shutdown_closes_it(self):
+        self.sync()
+        for name in ('alpha', 'beta'):
+            self.assertFalse((self.root / 'docker/stacks' / self.mode / name / 'db-access.json').exists())
+            self.assertNotIn('adminer', self.resolved(name)['services'])
+            self.assertNotIn('db-proxy', self.resolved(name)['services'])
+        stacks = self.load_module()
+        with mock.patch.object(stacks.db_access, 'disable') as disable, \
+                mock.patch.object(stacks, 'compose') as compose, \
+                mock.patch.object(sys, 'argv', ['stacks.py', 'project-down', 'alpha']):
+            stacks.main()
+            self.assertEqual(disable.call_args.args[0]['name'], 'alpha')
+            self.assertEqual(compose.call_args.args[1], 'down')
+        with mock.patch.object(stacks.db_access, 'disable') as disable, \
+                mock.patch.object(stacks, 'compose'), \
+                mock.patch.object(sys, 'argv', ['stacks.py', 'down-all']):
+            stacks.main()
+            self.assertEqual([call.args[0]['name'] for call in disable.call_args_list], ['alpha', 'beta'])
 
     def runtime(self, n):
         return self.root / 'docker/stacks' / self.mode / n

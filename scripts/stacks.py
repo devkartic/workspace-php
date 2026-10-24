@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from string import Template
+import db_access
 
 ROOT = Path(__file__).resolve().parents[1]
 MODE = os.environ.get('WORKSPACE_ENV', 'development')
@@ -769,7 +770,9 @@ def main():
             for n in names:
                 with lock(n):
                     if action == 'down-all':
-                        compose(project(n), 'down')
+                        p = project(n)
+                        db_access.disable(p)
+                        compose(p, 'down')
                     else:
                         up(sync([n])[0])
         return
@@ -789,7 +792,18 @@ def main():
         compose(p, *commands[action], profiles=False)
         return
     with lock(n):
-        if action in {'scaffold', 'check'}:
+        if action in {'db-access-enable', 'db-access-disable', 'db-access-status'}:
+            p = project(n)
+            if action == 'db-access-enable':
+                require((p['runtime'] / 'compose.json').is_file(), 'Start the project before enabling database access')
+                container = compose(p, 'ps', '-q', 'mariadb', capture=True, profiles=False).stdout.strip()
+                db_access.enable(p, container, os.environ.get('DB_ACCESS_PORT', '13306'),
+                                 os.environ.get('ADMINER_PORT', '18080'))
+            elif action == 'db-access-disable':
+                db_access.disable(p)
+            else:
+                db_access.status(p)
+        elif action in {'scaffold', 'check'}:
             created = []
             if action == 'scaffold':
                 with lock():
@@ -809,7 +823,9 @@ def main():
             else:
                 print(f'Validated {p["stack"]}')
         elif action == 'project-down':
-            compose(project(n), 'down', profiles=False)
+            p = project(n)
+            db_access.disable(p)
+            compose(p, 'down', profiles=False)
         else:
             raise ValueError(f'Unknown action: {action}')
 

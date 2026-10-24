@@ -6,9 +6,12 @@ HOST ?= $(subst _,-,$(NAME)).local
 DB ?= $(NAME)
 DOCUMENT_ROOT ?= .
 HTTP_PORT ?=
+DB_ACCESS_PORT ?= 13306
+ADMINER_PORT ?= 18080
+export DB_ACCESS_PORT ADMINER_PORT
 
 .DEFAULT_GOAL := help
-.PHONY: help setup doctor sync project-add project-list project-config project-up project-down project-build project-restart project-logs project-ps validate up down build restart logs ps shell mariadb mysql redis-cli backup restore gateway-up gateway-sync gateway-down gateway-logs up-all down-all test
+.PHONY: help setup doctor sync project-add project-list project-config project-up project-down project-build project-restart project-logs project-ps validate up down build restart logs ps shell mariadb mysql redis-cli backup restore gateway-up gateway-sync gateway-down gateway-logs up-all down-all test db-access-enable db-access-disable db-access-status
 help:
 	@printf '%s\n' \
 	  'make setup / doctor                 Initialize/check prerequisites' \
@@ -25,6 +28,8 @@ help:
 	  'make gateway-down                  Stop the shared gateway explicitly' \
 	  'make up-all / down-all              Explicitly operate on all selected projects' \
 	  'make shell / mariadb / redis-cli NAME=api' \
+	  'make db-access-enable / db-access-status / db-access-disable NAME=api' \
+	  '  Private Sequel Pro/Adminer access; optional DB_ACCESS_PORT=13306 ADMINER_PORT=18080' \
 	  'make backup NAME=api                Write a private SQL backup' \
 	  'make restore NAME=api FILE=/path/to/backup.sql' \
 	  'Append ENV=production for production; see docs/PRODUCTION.md' \
@@ -42,7 +47,7 @@ project-list:
 	$(STACK) list
 project-config:
 	$(STACK) scaffold "$(NAME)"
-project-up project-down project-build project-restart project-logs project-ps validate shell mariadb redis-cli backup:
+project-up project-down project-build project-restart project-logs project-ps validate shell mariadb redis-cli backup db-access-enable db-access-disable db-access-status:
 	$(STACK) $@ "$(NAME)"
 restore:
 	$(STACK) restore "$(NAME)" "$(FILE)"

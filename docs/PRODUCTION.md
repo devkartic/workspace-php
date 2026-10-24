@@ -164,8 +164,9 @@ routing first, then configure the proxy's origin TLS settings separately.
 
 In the Contabo firewall, allow incoming TCP 80/443 and your SSH port from appropriate
 sources. If Ubuntu UFW is active, allow HTTP/HTTPS there too. Preserve a working SSH
-rule/session before enabling or changing firewall rules. No project service publishes
-production database/cache ports, so do not open 3306/6379 publicly. Docker-published
+rule/session before enabling or changing firewall rules. No application project service publishes
+production database/cache ports. Optional database administration uses a separate
+stack bound only to localhost; do not open 3306/6379 or its maintenance ports publicly. Docker-published
 ports can bypass UFW; retain the restricted Compose exposure and provider firewall.
 See [Docker's firewall notes](https://docs.docker.com/engine/install/ubuntu/#firewall-limitations).
 
@@ -380,6 +381,41 @@ PHP retains a 256 MB limit and three FPM workers. Workers are opt-in using the
 
 ## Backups and operations
 
+### Temporary Sequel Pro / Adminer access
+
+Use the [database access and import instructions](../README.md#temporary-database-access-and-imports)
+to enable private endpoints on the VPS:
+
+```sh
+make db-access-enable ENV=production NAME=api
+make db-access-status ENV=production NAME=api
+# After finishing your work:
+make db-access-disable ENV=production NAME=api
+```
+
+Sequel Pro connects through its SSH tab to `127.0.0.1:13306` on the VPS.
+Adminer opens at `http://127.0.0.1:18080/` through an SSH tunnel; it is not served
+at the public website's `/adminer.php`. Both use the application's database credentials.
+Use `DB_ACCESS_PORT` and `ADMINER_PORT` on enable to select different ports.
+Default access is disabled. Enabling requires a healthy database and Compose
+v2.23.1+; no application image rebuild or database recreation occurs.
+
+Disable terminates both maintenance containers and their active connections.
+The application and existing SSH-based backup/restore remain available.
+Project-down/down-all also clean up maintenance containers. Maintenance services
+do not automatically restart after a host reboot. Normal project startup and
+validation never enable them.
+
+| Symptom | Check |
+| --- | --- |
+| Local port unavailable | Run status; disable before changing an enabled project's ports, or select unused ports |
+| SSH forwarding fails | SSH user/key/port and server TCP-forwarding policy; local computer port conflicts |
+| Sequel Pro cannot connect | Enable status, SSH tab, MySQL host `127.0.0.1`, configured proxy port, application credentials |
+| Adminer cannot connect to database | Server `mariadb`, application database/user/password, and project MariaDB health |
+| Adminer import exceeds limits | Use Sequel Pro or the streaming SSH restore command below for larger/longer imports |
+
+### SQL backup and restore
+
 ```sh
 make backup ENV=production NAME=api
 make restore ENV=production NAME=api FILE=/absolute/path/to/backup.sql
@@ -425,6 +461,10 @@ health endpoints. Service healthchecks do not verify business functionality.
 ## Verification
 
 `make test` runs configuration/registration regressions without starting containers.
+`python3 tests/db_access_smoke.py` additionally checks temporary database access using
+a disposable MariaDB, unique backend network, and ephemeral localhost ports. It
+verifies SQL import through the proxy, Adminer availability/upload settings, repeated
+enable/disable, active connection termination, and continued direct database access.
 `python3 tests/production_smoke.py` runs an opt-in two-project Docker test with unique
 stack identities, temporary source/data, and no published host ports. It verifies
 separate images/volumes/networks, cross-backend connection blocking, gateway hot

@@ -10,7 +10,7 @@ installed Laravel application. Register additional applications with
 
 ## Requirements
 
-- Docker Engine/Desktop with Compose v2
+- Docker Engine/Desktop with Compose v2.23.1+ (database access uses inline configs)
 - Python 3.9+, Make, and a POSIX shell
 - Internet access for initial image builds
 
@@ -100,6 +100,8 @@ Append `ENV=production` for production. Run commands from the repository root.
 | `make project-logs NAME=api` / `make project-ps NAME=api` | Logs/status |
 | `make shell NAME=api` | Open the PHP container shell |
 | `make mariadb NAME=api` / `make redis-cli NAME=api` | Project-specific database/cache clients |
+| `make db-access-enable NAME=api` | Temporarily enable private Sequel Pro and Adminer endpoints |
+| `make db-access-status NAME=api` / `make db-access-disable NAME=api` | Inspect / close database tool access |
 | `make validate NAME=api` | Generate and validate one stack and its overrides |
 | `make backup NAME=api` | Create a private logical SQL backup |
 | `make restore NAME=api FILE=/path/backup.sql` | Restore a trusted dump into this project's database |
@@ -111,6 +113,79 @@ Append `ENV=production` for production. Run commands from the repository root.
 
 Lifecycle aliases `up`, `down`, `build`, `restart`, `logs`, and `ps` also require
 `NAME`. No unqualified lifecycle command operates on every project.
+
+## Temporary database access and imports
+
+Database tool access is disabled by default. On your VPS, from the workspace root:
+
+```sh
+make db-access-enable ENV=production NAME=main
+make db-access-status ENV=production NAME=main
+```
+
+Replace `main` with your running project. This starts a separate, project-owned
+database proxy on `127.0.0.1:13306` and Adminer on `127.0.0.1:18080`. The application
+and MariaDB are not restarted. Keep ports 3306, 13306, and 18080 closed publicly;
+SSH is the entry point. The first enable downloads the maintenance images.
+
+In **Sequel Pro**, select its **SSH** tab:
+
+| Field | Value |
+| --- | --- |
+| MySQL Host | `127.0.0.1` |
+| Port | `13306` |
+| Username / Password / Database | Project `.env`: `DB_USERNAME` / `DB_PASSWORD` / `DB_DATABASE` |
+| SSH Host | Your VPS IP or hostname |
+| SSH User / Key / Port | Your normal server login details |
+
+For **Adminer**, run this on your own computer and leave it running:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:127.0.0.1:18080 YOUR_SSH_USER@YOUR_VPS_IP
+```
+
+Open **http://127.0.0.1:18080/** in your browser. Select MySQL, server `mariadb`,
+and the same application database credentials. Adminer is provided by its own
+container; no `adminer.php` upload or application image rebuild is needed.
+SSH must allow TCP forwarding. For a custom SSH port, add `-p PORT` to the command.
+
+Use Sequel Pro's import feature or Adminer's **Import** page for trusted SQL dumps
+targeting this project's database. Adminer allows uploads up to **128 MB**, with
+a **300-second** PHP execution limit; larger or slower imports should use the
+existing streaming restore command. Copy your SQL file to the VPS, then run:
+
+```sh
+make backup ENV=production NAME=main
+make restore ENV=production NAME=main FILE=/absolute/path/database.sql
+```
+
+Restore can replace data and may partially apply on failure. Stop application writes
+for a replacement import and keep a verified backup. GUI tools use the application's
+database grants; the SSH restore command uses the database administrator account.
+
+Close tool access when finished:
+
+```sh
+make db-access-disable ENV=production NAME=main
+```
+
+Disable removes both maintenance containers and disconnects their existing sessions.
+It preserves application access, database data, and SSH backup/restore commands.
+Project shutdown also disables tool access. Access does not automatically resume
+after a host restart; use enable again. These commands manage these endpoints,
+not the privileges of someone who already has SSH/Docker administration rights.
+
+For concurrent projects or occupied ports, choose different ports when enabling:
+
+```sh
+make db-access-enable ENV=production NAME=api DB_ACCESS_PORT=13307 ADMINER_PORT=18081
+```
+
+Use the chosen database port in Sequel Pro and the chosen Adminer port in both
+sides of the SSH forwarding rule and browser URL. Status reports the actual ports;
+disable needs no port arguments. Disable before changing an enabled project's ports.
+On a local workstation, omit `ENV=production` and connect to the localhost endpoints
+directly (Sequel Pro's Standard tab); no SSH tunnel is needed.
 
 ## Files and customization
 
