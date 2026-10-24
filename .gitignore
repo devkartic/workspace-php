@@ -11,6 +11,8 @@ docker/backups/
 .DS_Store
 __pycache__/
 .idea/
+# iTechOrbit is maintained in its own Git repository.
+/projects/itechorbit/
 # Each application's environment may contain credentials; commit its example only.
 projects/**/.env
 # Reinstall application dependencies from their committed lockfiles.
