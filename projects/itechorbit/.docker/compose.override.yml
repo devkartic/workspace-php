@@ -1,12 +1,3 @@
-# Project-only additions. Relative paths resolve from the application root.
-# Example:
-# services:
-#   worker:
-#     image: ${STACK_NAME}-php:${IMAGE_TAG}
-#     command: php artisan queue:work
-#     restart: unless-stopped
-#     volumes:
-#       - ${PROJECT_SOURCE}/.env:/var/www/html/.env:ro
-#       - runtime_storage:/var/www/html/storage
-#     # Default network is this project's private backend.
+# Project-only additions. Paths resolve from the application root.
+# See PROJECT_GUIDE.md and compose.override.production.yml.example.
 services: {}

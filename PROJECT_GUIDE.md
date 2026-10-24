@@ -8,20 +8,37 @@ Laravel still interprets its own application environment normally.
 ## Ownership and settings
 
 Registration preserves existing application code and environment values. External
-sources are linked under `projects/<name>`, with Docker files inside the actual
-application's `.docker/` directory. Failed registration restores existing `.env`
-bytes and removes only newly created registration files and links.
+sources are linked under `projects/<name>`. The included itechorbit application uses
+`projects/itechorbit/.docker/` for Docker configuration and `src/` for Laravel.
+Automatic registrations without an explicit source mode use `docker/projects/<name>/`. Existing application-local `.docker/`
+registrations without `WORKSPACE_SOURCE_MODE=mounted` keep their legacy build
+behavior until explicitly migrated; see
+[production migration](docs/PRODUCTION.md#move-existing-docker-configuration-outside-the-application).
+Failed registration restores existing `.env` bytes and removes only newly created registration files and links.
 
-| Application `.env` setting | Meaning |
+For nested projects, the parent `.env` contains only `WORKSPACE_*` metadata and
+`src/.env` contains only application settings. The CLI reads both without writing
+workspace metadata into Laravel. `WORKSPACE_DOCUMENT_ROOT` and writable paths are
+relative to the application source; `logs/php-error.log` stays relative to the
+parent project. `${PROJECT_SOURCE}` resolves to the application source,
+`${PROJECT_ROOT}` to the parent, and `${PROJECT_CONFIG}` to the active Docker configuration directory.
+Compose override relative paths continue resolving from the parent project root.
+Use `SOURCE_ROOT=src` with `make project-add` for this layout; existing application
+environment values are preserved. Development setup copies each missing environment
+file from its own example and does not replace existing values.
+
+| Workspace setting | Meaning |
 | --- | --- |
+| `WORKSPACE_SOURCE_MODE` | Set `mounted` to use project-local `.docker/` runtime configuration with source mounts; omit for existing automatic location/legacy behavior |
+| `WORKSPACE_SOURCE_ROOT` | Application directory relative to the registered project; `src` for itechorbit, `.` when absent for compatibility |
 | `WORKSPACE_PROJECT_NAME` | Stable lowercase name matching `projects/<name>`; maximum 32 characters; `gateway` is reserved |
 | `WORKSPACE_PHP_VERSION` | Default: 8.5; development: 7.4, 8.1, 8.3, 8.4, 8.5; production: 8.3, 8.4, 8.5 |
 | `WORKSPACE_HOSTNAME` | Canonical hostname, without scheme, port, or path |
 | `WORKSPACE_DOMAIN_ALIASES` | Optional space-separated hostnames redirecting to the canonical hostname |
 | `WORKSPACE_DOCUMENT_ROOT` | Relative web directory; use `public` for Laravel |
 | `WORKSPACE_HTTP_PORT` | Optional development-only localhost port; ignored in production |
-| `WORKSPACE_IMAGE_TAG` | Project image tag, default `current`; use release tags in production |
-| `WORKSPACE_WRITABLE_PATHS` | Existing relative directories outside the public root, separated by spaces |
+| `WORKSPACE_IMAGE_TAG` | Runtime image tag, default `current`; source updates need no tag change |
+| `WORKSPACE_WRITABLE_PATHS` | Existing relative directories outside the public root; mounted Laravel defaults to storage and bootstrap/cache when absent |
 | `WORKSPACE_STORAGE_VOLUME` / `WORKSPACE_CACHE_VOLUME` | Optional existing Laravel storage/cache volumes to adopt explicitly |
 
 Set `APP_URL` to the canonical URL. Canonical names and aliases must be lowercase
@@ -37,7 +54,7 @@ new-project defaults are development-only. Existing application values are prese
 and must be updated explicitly when migrating from shared/root access. Database
 names/users may repeat between projects because database servers are separate.
 
-The private `.docker/infra.<environment>.env` contains an independently generated
+The private `projects/<name>/.docker/infra.<environment>.env` contains an independently generated
 MariaDB root password and this project's resource limits. Existing private files
 are never overwritten. Changing a file's password does not alter initialized
 MariaDB accounts; rotate accounts explicitly and update the corresponding file.
@@ -46,16 +63,16 @@ MariaDB accounts; rotate accounts explicitly and update the corresponding file.
 
 | File | Purpose |
 | --- | --- |
-| `.docker/Dockerfile` | This project's PHP extensions, packages, and build stages |
-| `.docker/nginx.Dockerfile` | Nginx image and production public assets |
-| `.docker/compose.yml` | Project-owned base service configuration |
-| `.docker/compose.override.yml` | Common project-only additions/overrides |
-| `.docker/compose.override.production.yml` | Optional production-specific override |
-| `.docker/compose.override.development.yml` | Optional development-specific override |
-| `.docker/php.ini`, `.docker/production.ini` | Project-owned PHP settings |
-| `.docker/fpm.conf`, `.docker/production-fpm.conf` | PHP-FPM settings |
-| `.docker/nginx.conf.template` | Routing rules for this project's Nginx |
-| `.docker/*Dockerfile.dockerignore` | Build exclusions; keep credentials/log exclusions |
+| `projects/<name>/.docker/Dockerfile` | This project's PHP extensions, packages, and build stages |
+| `projects/<name>/.docker/nginx.Dockerfile` | Nginx runtime image; public assets come from the source mount |
+| `projects/<name>/.docker/compose.yml` | Project-owned base service configuration |
+| `projects/<name>/.docker/compose.override.yml` | Common project-only additions/overrides |
+| `projects/<name>/.docker/compose.override.production.yml` | Optional production-specific override |
+| `projects/<name>/.docker/compose.override.development.yml` | Optional development-specific override |
+| `projects/<name>/.docker/php.ini`, `projects/<name>/.docker/production.ini` | Project-owned PHP settings |
+| `projects/<name>/.docker/fpm.conf`, `projects/<name>/.docker/production-fpm.conf` | PHP-FPM settings |
+| `projects/<name>/.docker/nginx.conf.template` | Routing rules for this project's Nginx |
+| `projects/<name>/.docker/*Dockerfile.dockerignore` | Build exclusions; keep credentials/log exclusions |
 
 Scaffolding copies missing files from `docker/templates/` and the base Compose
 template. Existing files remain independent. Keep the development/production build
@@ -64,20 +81,24 @@ Redis image layers may share Docker's cache, while containers and storage remain
 separate. Existing projects require explicit review/application of later template
 or security updates.
 
-Production copies a prepared application release into project-specific images;
-it does not install Composer dependencies or build frontend assets automatically.
-Prepare locked dependencies and assets in CI or a project-specific build stage.
-Root `.dockerignore` rules are copied into Dockerfile-specific ignore files only
-at initial scaffolding; apply later changes to those files explicitly.
+Mounted project-local runtime images use `projects/<name>/.docker/` as their build context and contain
+no application source. PHP and Nginx mount the registered source; production code
+is read-only, while configured writable runtime paths use persistent volumes.
+Prepare Composer dependencies and frontend assets in CI before publishing source.
+Application `.dockerignore` rules do not apply to runtime-only builds. Private
+`infra.*.env` and override files are excluded from the runtime build context.
+`project-up` builds missing runtime images and reuses existing ones; use
+`project-build` followed by `project-up` after runtime configuration changes.
+Ordinary source updates need only Laravel cache refreshes and worker restarts.
 
 Generated files under `docker/stacks/<environment>/<project>/` are private and
 replaced by synchronization. Do not edit them or delete the volume ownership
-registry during cleanup. PHP configuration lives in `.docker/php.ini` and
-`.docker/production.ini`; the legacy `dev/php.ini` override is no longer loaded.
+registry during cleanup. PHP configuration lives in `projects/<name>/.docker/php.ini` and
+`projects/<name>/.docker/production.ini`; the legacy `dev/php.ini` override is no longer loaded.
 
 ## Add services to one project
 
-Example `.docker/compose.override.yml`:
+Example `projects/<name>/.docker/compose.override.yml`:
 
 ```yaml
 services:
@@ -95,13 +116,15 @@ Configure the service's own credentials using project-private settings. Its defa
 network is this project's backend, and its volume is namespaced to this stack.
 Project overrides cannot use shared/external networks, unapproved external volumes,
 host namespaces, privileged containers, added capabilities, devices, host sockets,
-or bind mounts outside the project. Secret/config files must belong to the project.
-Additional build contexts and host/shared build networks are unsupported.
+or bind mounts outside the registered source, external configuration, or generated
+runtime directory. Secret/config files must belong to the project.
+Custom runtime builds must use `${PROJECT_CONFIG}` as context and Dockerfile paths
+relative to it. Additional build contexts and host/shared build networks are unsupported.
 Production host ports and writable host bind mounts are rejected except the PHP
 container's dedicated project `logs/` mount; development ports must bind to `127.0.0.1`. These checks guard the supported workflow, not users who
 already control the Docker daemon.
 
-All override paths resolve from the application root, not `.docker/`. Merge order:
+All override paths resolve from the parent project root, not `projects/<name>/.docker/`. Merge order:
 project base Compose, generated environment overlay, common override, then optional
 environment-specific override. Project settings and generated identity/path values
 take precedence over exported shell values; application dotenv keys cannot redirect
@@ -112,12 +135,12 @@ make validate ENV=production NAME=api
 make project-up ENV=production NAME=api
 ```
 
-Only this project is built and reconciled. Removed services are removed within its
+Only this project is reconciled; missing runtime images are built. Removed services are removed within its
 Compose identity. Other projects and the gateway are untouched.
 
 ## Optional Laravel worker and scheduler
 
-Scaffolding provides `.docker/compose.override.production.yml.example`. Once the
+Scaffolding provides `projects/<name>/.docker/compose.override.production.yml.example`. Once the
 project is a prepared Laravel application with
 `WORKSPACE_WRITABLE_PATHS=storage bootstrap/cache`, copy the example to
 `compose.override.production.yml` **only if that file does not already exist**.

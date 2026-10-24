@@ -10,14 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && if ! php -r 'exit(extension_loaded("Zend OPcache") ? 0 : 1);'; then docker-php-ext-install -j"$(nproc)" opcache; fi \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
-COPY .docker/php.ini /usr/local/etc/php/conf.d/zz-custom.ini
-COPY .docker/fpm.conf /usr/local/etc/php-fpm.d/zz-project.conf
-COPY .docker/prepare-logs /usr/local/bin/prepare-logs
-COPY .docker/fpm-healthcheck /usr/local/bin/fpm-healthcheck
+COPY php.ini /usr/local/etc/php/conf.d/zz-custom.ini
+COPY fpm.conf /usr/local/etc/php-fpm.d/zz-project.conf
+COPY prepare-logs /usr/local/bin/prepare-logs
+COPY fpm-healthcheck /usr/local/bin/fpm-healthcheck
 RUN chmod 755 /usr/local/bin/fpm-healthcheck
 WORKDIR /var/www/html
+COPY prepare-runtime /usr/local/bin/prepare-runtime
 FROM base AS development
+LABEL io.php-workspace.runtime=mounted-development
 FROM base AS production
-COPY --chown=www-data:www-data . /var/www/html
-COPY .docker/production.ini /usr/local/etc/php/conf.d/zzz-production.ini
-COPY .docker/production-fpm.conf /usr/local/etc/php-fpm.d/zzz-production.conf
+LABEL io.php-workspace.runtime=mounted-production
+COPY production.ini /usr/local/etc/php/conf.d/zzz-production.ini
+COPY production-fpm.conf /usr/local/etc/php-fpm.d/zzz-production.conf

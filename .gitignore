@@ -25,4 +25,6 @@ docker/.workspace-lock/
 # Independent stack runtime and private project infrastructure
 docker/stacks/
 projects/**/.docker/infra.*.env
+docker/projects/*/infra.*.env
+docker/projects/.*-migration-*/
 docker/.stack-*.lock/

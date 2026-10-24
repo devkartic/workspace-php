@@ -5,19 +5,21 @@ PROJECT_PATH ?= projects/$(NAME)
 HOST ?= $(subst _,-,$(NAME)).local
 DB ?= $(NAME)
 DOCUMENT_ROOT ?= .
+SOURCE_ROOT ?= .
 HTTP_PORT ?=
 DB_ACCESS_PORT ?= 13306
 ADMINER_PORT ?= 18080
 export DB_ACCESS_PORT ADMINER_PORT
 
 .DEFAULT_GOAL := help
-.PHONY: help setup doctor sync project-add project-list project-config project-up project-down project-build project-restart project-logs project-ps validate up down build restart logs ps shell mariadb mysql redis-cli backup restore gateway-up gateway-sync gateway-down gateway-logs up-all down-all test db-access-enable db-access-disable db-access-status
+.PHONY: help setup doctor sync project-add project-list project-config project-migrate-config project-up project-down project-build project-restart project-logs project-ps validate up down build restart logs ps shell mariadb mysql redis-cli backup restore gateway-up gateway-sync gateway-down gateway-logs up-all down-all test db-access-enable db-access-disable db-access-status
 help:
 	@printf '%s\n' \
 	  'make setup / doctor                 Initialize/check prerequisites' \
 	  'make project-add NAME=api            Create with the tested stable PHP default (optional PHP=8.4)' \
 	  'make project-config NAME=api        Scaffold project-owned Docker configuration' \
-	  'make project-up NAME=api            Build/start only this project and its services' \
+	  'make project-up NAME=api            Start/reconcile project; build missing runtime images' \
+	  'make project-migrate-config NAME=api Move legacy config outside source; enable source mounts' \
 	  'make project-down NAME=api          Stop only this project (keep volumes)' \
 	  'make project-build NAME=api         Build only this project images' \
 	  'make project-restart NAME=api       Restart only this project containers' \
@@ -42,12 +44,12 @@ sync:
 	$(STACK) sync
 project-add:
 	@test -n "$(NAME)" || (echo 'Usage: make project-add NAME=api [PHP=8.4]'; exit 2)
-	$(STACK) add "$(NAME)" "$(PROJECT_PATH)" "$(PHP)" "$(HOST)" "$(DB)" "$(DOCUMENT_ROOT)" "$(HTTP_PORT)"
+	$(STACK) add "$(NAME)" "$(PROJECT_PATH)" "$(PHP)" "$(HOST)" "$(DB)" "$(DOCUMENT_ROOT)" "$(HTTP_PORT)" "$(SOURCE_ROOT)"
 project-list:
 	$(STACK) list
 project-config:
 	$(STACK) scaffold "$(NAME)"
-project-up project-down project-build project-restart project-logs project-ps validate shell mariadb redis-cli backup db-access-enable db-access-disable db-access-status:
+project-up project-down project-build project-restart project-logs project-ps validate shell mariadb redis-cli backup db-access-enable db-access-disable db-access-status project-migrate-config:
 	$(STACK) $@ "$(NAME)"
 restore:
 	$(STACK) restore "$(NAME)" "$(FILE)"

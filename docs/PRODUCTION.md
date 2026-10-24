@@ -23,11 +23,13 @@ make setup ENV=production
 ```
 
 Use a production checkout separate from local development. Prepare each Laravel
-release, locked production dependencies, and frontend assets in CI or a project
-build stage. The workspace does not install Laravel or run Composer, migrations,
-seeding, or asset builds automatically. The sole included project, `itechorbit`,
-is a PHP starter rather than an installed Laravel application. Create or register
-additional projects with `make project-add` when needed.
+release, locked production dependencies, and frontend assets in CI before publishing
+the prepared source directory. The workspace does not install Laravel or run
+Composer, migrations,
+seeding, or asset builds automatically. The included project, `itechorbit`, is a
+fresh Laravel 13 application under `projects/itechorbit/src/`. Install its locked
+Composer dependencies and build frontend assets before production deployment.
+Create or register additional projects with `make project-add` when needed.
 Existing shared-stack users should read [migration](#migrate-an-existing-shared-stack)
 before starting new database containers or switching traffic.
 
@@ -44,6 +46,49 @@ EDGE_MEMORY=256m
 
 The namespace is part of every image, network, and volume identity. Preserve it once
 data exists. Legacy global MariaDB/Redis credentials are no longer used.
+
+## Included itechorbit layout
+
+`projects/itechorbit/.env` contains workspace settings only. In production set its
+`WORKSPACE_SOURCE_MODE=mounted`, `WORKSPACE_SOURCE_ROOT=src`,
+`WORKSPACE_DOCUMENT_ROOT=public`,
+`WORKSPACE_WRITABLE_PATHS="storage bootstrap/cache"`, PHP version, canonical host,
+and aliases. Set `APP_ENV`, `APP_DEBUG`, `APP_URL`, `APP_KEY`, database, mail, and
+Redis settings exclusively in `projects/itechorbit/src/.env`. Neither actual
+`.env` is committed; copy each directory's own `.env.example` when preparing a new
+checkout. Never put `WORKSPACE_*` assignments in Laravel's environment file.
+
+Docker settings live at `projects/itechorbit/.docker/`, outside the Laravel `src/` checkout. The application root mounted
+at `/var/www/html` is **src**, so Laravel serves `/var/www/html/public/index.php`.
+PHP's host error log remains `projects/itechorbit/logs/php-error.log`; Laravel's own
+logs live in the storage runtime volume. Preserve existing infrastructure secrets
+and runtime volumes when deploying this layout to an existing server. For itechorbit, `WORKSPACE_SOURCE_MODE=mounted` selects the project-local
+`.docker/` runtime configuration without changing source-mount behavior. Projects
+without this setting retain their existing configuration selection. Preserve or
+explicitly migrate old private infrastructure before switching layouts.
+
+For an existing VPS where Laravel currently lives directly in `projects/itechorbit`,
+first back up its source, environment, infrastructure configuration, and runtime
+data. Publish the reviewed application into `src/`, preserving its Laravel-only
+`.env`; move only `WORKSPACE_*` settings into the parent `.env`, set
+`WORKSPACE_SOURCE_ROOT=src`, and migrate legacy Docker configuration before
+`project-up`. Existing volume names and credentials stay unchanged. Do not replace
+your existing application with the fresh example or regenerate its `APP_KEY`.
+
+Run Composer/npm inside `projects/itechorbit/src`. Laravel's local example uses file
+sessions/cache and synchronous queues so the welcome page needs no database
+migration. Generate a new `APP_KEY` only for a genuinely new application. Production
+Laravel `.env` permissions apply to `projects/itechorbit/src/.env`:
+
+```sh
+sudo chown "$(id -u):33" projects/itechorbit/src/.env
+chmod 640 projects/itechorbit/src/.env
+chmod 600 projects/itechorbit/.env
+```
+
+The `main`/`api` examples below retain the supported root-based registration layout.
+To use a nested layout for them, add `SOURCE_ROOT=src` to registration, keep the
+parent environment workspace-only, and put application settings under `src/.env`.
 
 ## 2. Configure and register Laravel projects
 
@@ -67,7 +112,8 @@ REDIS_PREFIX=main:
 ```
 
 Generate a separate database and Redis password for every project with
-`openssl rand -hex 32`. Production passwords must have at least 32 characters from
+`openssl rand -hex 8` (16 hexadecimal characters). Production passwords must have
+at least 16 characters from
 `A-Z`, `a-z`, `0-9`, `_`, and `-`; placeholders are rejected. Set the application's
 own `APP_KEY`, cache/session drivers, mail settings, and proxy trust as appropriate.
 The image has no PHP Redis extension; install `predis/predis` or customize its build.
@@ -107,7 +153,7 @@ Complete production settings before scaffolding:
 
 ```sh
 make project-config ENV=production NAME=main
-chmod 600 docker/.env.production projects/main/.docker/infra.production.env
+chmod 600 docker/.env.production docker/projects/main/infra.production.env
 sudo chown "$(id -u):33" projects/main/.env
 chmod 640 projects/main/.env
 ```
@@ -117,10 +163,19 @@ PHP image; adjust permissions if your custom image uses another user. Private
 infrastructure files contain independently generated root passwords and project
 resource limits. Existing files are never overwritten.
 
-Production source is baked into the PHP image and its filesystem is read-only.
-Application `.env` is mounted read-only; named runtime volumes are initialized from
-the image with `www-data` ownership. Existing volume contents are not replaced by
-new image seed files. Nginx reads public uploads through a read-only storage mount.
+New projects keep Docker configuration in `docker/projects/<name>/`, outside the
+application checkout. Production PHP and Nginx mount the source directory read-only
+at `/var/www/html`; application code and public assets are never copied into their
+runtime images. The application `.env` is included in that read-only mount.
+Named runtime volumes overlay `storage` and `bootstrap/cache`; empty volumes are
+seeded from host source at startup and initialized with `www-data` ownership.
+Existing volume contents are preserved. Mounted Laravel projects default to these
+two writable directories when `WORKSPACE_WRITABLE_PATHS` is absent; an explicit
+setting must include both, unless existing runtime volumes are adopted.
+Legacy projects with an application-local `.docker/` and no explicit mounted mode
+retain image-baked source until
+explicitly migrated using the procedure below. Nginx reads public uploads through
+a read-only storage mount.
 Laravel's `public/storage -> ../storage/app/public` is supported; PHP execution
 under `/storage/` is denied. Custom upload locations need equivalent routing rules.
 
@@ -181,7 +236,8 @@ make project-up ENV=production NAME=api
 make gateway-up ENV=production
 ```
 
-Startup builds only the selected project's images, validates Nginx, waits for its
+Startup builds missing runtime images for only the selected project, reuses existing
+runtime images, validates Nginx, waits for its
 MariaDB/Redis, provisions and verifies database credentials, then starts its services.
 The gateway attaches to separate edge networks without accessing project backends.
 
@@ -244,32 +300,110 @@ application integration test.
 | Settings appear unchanged | Laravel configuration cache and long-running workers |
 | Gateway sync reports a collision | Remove the duplicate canonical/alias assignment from selected projects |
 
-## Add a service or deploy a new release
+## Move existing Docker configuration outside the application
 
-Project-owned `.docker/Dockerfile`, `.docker/nginx.Dockerfile`, and Compose overrides
-are independent. See [the project guide](../PROJECT_GUIDE.md) for worker/extra-service
-examples and override conventions. Project settings do not rebuild other projects.
-Changing shared templates only affects future scaffolding; existing projects must
-apply relevant security/template updates explicitly.
+Existing registrations with `projects/<name>/.docker/` and no
+`WORKSPACE_SOURCE_MODE=mounted` continue using their original build behavior.
+The included itechorbit project already uses mounted runtime configuration and
+does not need this legacy migration command. Migrate each project explicitly, from the workspace root:
 
 ```sh
 make backup ENV=production NAME=api
-# Install the reviewed release and update WORKSPACE_IMAGE_TAG in api's .env.
+make project-migrate-config ENV=production NAME=api
 make project-up ENV=production NAME=api
 ```
 
-Only that project's images and containers are reconciled, including removed custom
-services. The gateway is not touched. Add/remove domains explicitly with
-`make gateway-sync ENV=production`; the gateway attaches to per-project edge networks
-and gracefully reloads routes without recreation. `gateway-up` may recreate Caddy
-when its image/ports/resource configuration changes. `gateway-down` stops all public
-routes; `project-down NAME=api` stops only api and retains all data volumes.
+The legacy migration command (for projects without `WORKSPACE_SOURCE_MODE`) copies
+configuration and private infrastructure credentials into `docker/projects/api/`, validates the candidate, and preserves stack names,
+networks, database/cache credentials, and runtime volume identities. It stores a
+private configuration backup under `docker/backups/config/api/` and retains
+the original application `.docker/` directory. It does not stop running containers.
+The following `project-up` builds runtime images once and recreates application
+containers with source mounts; this may briefly interrupt requests.
 
-Deployment is not zero downtime. Keep reviewed source revisions and image tags for
-rollback. Restore the previous release/tag and rerun project-up to roll back code;
-schema changes require an application-specific rollback plan. No migrations, seeding,
-workers, or schedulers are installed automatically. Restart long-running workers
-as part of each release.
+Custom or outdated Dockerfiles/base Compose definitions cause migration to stop
+before switching configuration. Compare those files against `docker/templates/`
+and `docker/docker-compose.yml`, save custom runtime instructions, and merge the
+legacy build contracts before retrying. Reapply custom runtime instructions to the
+external Dockerfiles afterward and run `project-build`, then `project-up`. Do not
+reintroduce application `COPY` instructions. Overrides remain relative to the
+application root. Custom build contexts must use `${PROJECT_CONFIG}`, and custom
+Dockerfile paths must be relative to that context. Worker services using the PHP
+image must mount `${PROJECT_SOURCE}:/var/www/html:ro` and the same runtime volumes.
+Merge the updated worker example when needed. Invalid candidate overrides leave
+active generated configuration unchanged.
+
+To revert configuration before further deployments, move the external project
+configuration directory aside, restore the saved legacy configuration if needed,
+and run `project-up`. The retained legacy setup rebuilds source into images. Keep
+source revisions and runtime-volume backups separately; configuration backups do
+not include application data. Do not delete volumes during migration or rollback.
+
+## Deploy source and design updates from a pipeline
+
+For new or migrated projects, GitHub Actions and Bitbucket Pipelines can use the
+same deployment procedure. Keep the application at a stable host directory such as
+`/srv/workspace-php/projects/itechorbit/src`, with Docker configuration independently at
+`/srv/workspace-php/projects/itechorbit/.docker/`.
+
+1. Test a reviewed application revision and prepare locked dependencies with
+   `composer install --no-dev --prefer-dist --optimize-autoloader`, plus frontend
+   assets with `npm ci` and `npm run build`, using a compatible build environment.
+2. Publish the prepared source, `vendor/`, and compiled `public/build/` assets into
+   the existing application directory. Preserve the server `.env`, workspace
+   metadata in the parent directory, parent `logs/`, and host runtime seed directories. Keep the existing storage
+   and cache volumes. Do not use a destructive checkout cleanup or publish stale
+   environment-specific Laravel cache files from CI.
+3. After publishing completes, refresh Laravel's caches and workers through SSH:
+
+   ```sh
+   cd /srv/workspace-php
+   WORKSPACE_ENV=production python3 scripts/stacks.py compose itechorbit exec -T -u www-data php php artisan optimize
+   WORKSPACE_ENV=production python3 scripts/stacks.py compose itechorbit exec -T -u www-data php php artisan queue:restart
+   ```
+
+PHP, Blade, CSS/JavaScript builds, and public assets now update through the mounts.
+No Docker build, `project-up`, or container recreation is required for ordinary
+source updates. PHP's supplied OPcache settings recheck changed files within about
+two seconds; Laravel caches still need the refresh above. Restart any additional
+long-running application servers through their own deployment procedure. Restart
+PHP if changing preload configuration or when custom OPcache settings disable
+file timestamp checks.
+
+Publish assets before refreshing caches. Updating files in place can expose a
+partially published release, so use application maintenance mode when needed;
+this workflow does not promise zero downtime. Restore the previous source and
+assets and refresh caches/workers to roll back code. Schema changes need their
+own backup and migration/rollback procedure and are never run automatically.
+
+Keep the mounted directory itself stable. Switching a registration symlink to a
+different release directory requires `make project-up ENV=production NAME=itechorbit`
+to reconcile the changed source path. Replacing a directory at the same pathname
+requires stopping and starting that project with `project-down` then `project-up`,
+which retains volumes but interrupts service. Existing mounts do not follow
+replacement directory inodes automatically.
+
+### Change Docker or PHP runtime configuration
+
+Each project's Dockerfiles, Compose overrides, and PHP/Nginx settings are
+independent. See [the project guide](../PROJECT_GUIDE.md) for custom services.
+Changing shared templates affects future scaffolding only.
+
+After changing a PHP version, extension, package, Dockerfile, or copied PHP/Nginx
+configuration, rebuild and apply only the affected project's runtime images:
+
+```sh
+make project-build ENV=production NAME=itechorbit
+make project-up ENV=production NAME=itechorbit
+```
+
+For Compose/resource settings only, use `project-up`. `WORKSPACE_IMAGE_TAG` now tags
+the runtime image, not each source revision; keep it unchanged for ordinary code
+updates. Legacy projects still rebuild application images on `project-up`.
+
+The gateway is not touched by ordinary project operations. Add/remove domains with
+`make gateway-sync ENV=production`; gateway image/port/resource changes need
+`gateway-up`. `project-down NAME=api` retains that project's data volumes.
 
 Database provisioning is idempotent and verifies application logins before exposing
 the stack. It never silently rotates initialized account passwords. To change a root
@@ -441,7 +575,8 @@ Configure external HTTPS uptime monitoring, backup-age alerts, disk/memory alert
 and database/cache monitoring. Healthchecks are available via project-ps; Docker
 restart policies do not restart a service solely because it becomes unhealthy.
 
-Tune limits in each project's `.docker/infra.production.env`, then apply them with
+Tune limits in itechorbit's `projects/itechorbit/.docker/infra.production.env`
+(or the other project's active configuration directory), then apply them with
 `make project-up ENV=production NAME=api`. Redis uses `noeviction`; monitor memory
 errors, especially for queues. Logs rotate at 10 MB with three files per service;
 added services need their own limits/logging. Your 100 GB SSD must accommodate
@@ -461,6 +596,14 @@ health endpoints. Service healthchecks do not verify business functionality.
 ## Verification
 
 `make test` runs configuration/registration regressions without starting containers.
+`python3 tests/laravel_smoke.py` additionally serves the included Laravel application
+inside a disposable nested-source stack (run Composer install first). It checks
+the welcome page, live route/assets, split environments, parent PHP logs, and runtime
+permissions without changing a live application.
+`python3 tests/mounted_smoke.py` runs disposable two-project mounted-source checks
+for live PHP/assets, read-only source, writable runtime initialization, persistent
+volumes, image reuse, and project isolation. It publishes no host ports and removes
+only its own temporary stacks, volumes, networks, and images.
 `python3 tests/db_access_smoke.py` additionally checks temporary database access using
 a disposable MariaDB, unique backend network, and ephemeral localhost ports. It
 verifies SQL import through the proxy, Adminer availability/upload settings, repeated

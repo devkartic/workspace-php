@@ -5,9 +5,9 @@
 .env.*
 **/.env
 **/.env.*
-.docker/infra.*.env
-.docker/compose.override*.yml
-.docker/compose.override*.yaml
+infra.*.env
+compose.override*.yml
+compose.override*.yaml
 **/node_modules
 **/logs
 **/backups

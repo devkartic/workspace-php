@@ -4,9 +4,10 @@ Run PHP or Laravel applications on a workstation or VPS. Each project owns its P
 and Nginx images, MariaDB, Redis, backend network, and data volumes. Only the Caddy
 HTTP/HTTPS gateway is shared. Rebuilding or stopping one project leaves others alone.
 
-`itechorbit` is the only included project. It is a small PHP starter, not an
-installed Laravel application. Register additional applications with
-`make project-add`; existing code and Docker customizations are preserved.
+`itechorbit` is the included fresh Laravel 13 application. Its source and standard
+dependencies live in `projects/itechorbit/src/`, independently of workspace and
+Docker configuration. Register additional applications with `make project-add`;
+existing code and Docker customizations are preserved.
 
 ## Requirements
 
@@ -33,9 +34,16 @@ saved in its settings; existing projects never upgrade implicitly. The default i
 maintained with the workspace rather than discovered online during creation.
 
 Open the localhost URL printed by registration. `make setup` prepares the included
-`itechorbit` starter but starts no containers. To start it, run:
+`itechorbit` workspace and Laravel environment files but starts no containers.
+Install its locked dependencies and generate a local application key before starting:
 
 ```sh
+cd projects/itechorbit/src
+composer install
+php artisan key:generate
+npm ci
+npm run build
+cd ../../..
 make project-up NAME=itechorbit
 ```
 
@@ -85,6 +93,63 @@ reachable. Use `make gateway-sync ENV=production` after hostname/alias changes;
 ordinary project builds never restart the gateway. Public DNS and certificate
 issuance must be verified on your VPS.
 
+## Nested application source and separate environments
+
+The included project's structure is:
+
+```text
+projects/itechorbit/
+├── .docker/                    Docker configuration and private infrastructure
+├── .env                        Workspace settings only
+├── logs/                       Host PHP error logs
+└── src/                        Fresh Laravel application
+    ├── .env                    Laravel settings only
+    ├── composer.json
+    ├── artisan
+    ├── app/
+    └── public/
+```
+
+The outer environment sets `WORKSPACE_SOURCE_MODE=mounted` to select project-local
+Docker configuration with mounted source, plus `WORKSPACE_SOURCE_ROOT=src`,
+`WORKSPACE_DOCUMENT_ROOT=public`, and runtime paths `storage bootstrap/cache`.
+The inner environment contains only Laravel application settings. Actual environment
+files are private; each directory has a separate committed `.env.example`.
+The included project keeps its mounted-runtime Docker configuration in
+`projects/itechorbit/.docker/`, outside `src/`; private migration
+backups are kept separately under `docker/backups/config/itechorbit/`.
+
+To register another application using the same layout:
+
+```sh
+make project-add NAME=shop PROJECT_PATH=/srv/apps/shop SOURCE_ROOT=src DOCUMENT_ROOT=public
+```
+
+Here `/srv/apps/shop` is the project wrapper and `/srv/apps/shop/src` is the Laravel
+application. Existing root-based registrations remain supported; omitted
+`SOURCE_ROOT` defaults to `.`. Run Composer and npm inside the application source
+directory; run workspace Make commands from this repository's root.
+
+## Source updates without image rebuilds
+
+New projects mount application source into PHP and Nginx. Production source is
+read-only inside containers, with persistent volumes for Laravel runtime data.
+Update source and compiled frontend assets from your pipeline, then refresh
+Laravel caches and restart workers. Docker rebuilds are needed only for runtime
+changes such as PHP versions, extensions, or copied server configuration:
+
+```sh
+make project-build ENV=production NAME=api
+make project-up ENV=production NAME=api
+```
+
+`project-up` builds missing runtime images on initial startup and otherwise reuses
+them. Existing projects with application-local `.docker/` and no
+`WORKSPACE_SOURCE_MODE=mounted` keep the old behavior
+until [explicit migration](docs/PRODUCTION.md#move-existing-docker-configuration-outside-the-application).
+See the [pipeline workflow](docs/PRODUCTION.md#deploy-source-and-design-updates-from-a-pipeline)
+for source updates and Laravel cache handling.
+
 ## Everyday commands
 
 Append `ENV=production` for production. Run commands from the repository root.
@@ -95,7 +160,8 @@ Append `ENV=production` for production. Run commands from the repository root.
 | `make project-config NAME=api` | Scaffold missing project-owned Docker files |
 | `make project-up NAME=api` | Build/start this project's services |
 | `make project-down NAME=api` | Stop this project; keep data |
-| `make project-build NAME=api` | Build this project's images |
+| `make project-build NAME=api` | Explicitly rebuild this project's runtime images |
+| `make project-migrate-config NAME=api` | Move legacy Docker config outside source and enable source mounts |
 | `make project-restart NAME=api` | Restart existing containers; use project-up to apply config changes |
 | `make project-logs NAME=api` / `make project-ps NAME=api` | Logs/status |
 | `make shell NAME=api` | Open the PHP container shell |
@@ -197,17 +263,21 @@ docs/PRODUCTION.md               VPS, real domains, email, backups, and migratio
 docker/docker-compose.yml        Base Compose scaffolding template
 docker/templates/                Other scaffolding templates
 docker/project.env.example      Safe defaults for new development registrations
-projects/<name>/.docker/         Project-owned Dockerfiles, Compose, and PHP/Nginx settings
+projects/itechorbit/.env         Workspace metadata only (WORKSPACE_* settings)
+projects/itechorbit/src/         Laravel source, Laravel .env, dependencies, built assets
+projects/itechorbit/logs/        Host PHP error log
+projects/itechorbit/.docker/     Project-owned Dockerfiles, Compose, and PHP/Nginx settings
+docker/projects/<name>/          Automatic registration fallback for other projects
 docker/stacks/                   Private generated runtime and volume ownership state
 ```
 
-Edit a project's `.docker/Dockerfile` for its PHP extensions and
-`.docker/compose.override.yml` for additional services. Project-owned files are
+Edit a project's `.docker/Dockerfile` (itechorbit) for its PHP extensions and
+its `.docker/compose.override.yml` for additional services. Project-owned files are
 copied once and never overwritten automatically. Their duplication is intentional:
 changing one project must not change another. Template fixes must be reviewed and
 applied to existing projects individually.
 
-Keep `.env`, `.docker/infra.*.env`, runtime files, and backups private. Production
+Keep `.env`, `.docker/infra.*.env`, `docker/projects/*/infra.*.env`, runtime files, and backups private. Production
 images exclude dotenv credentials and logs. New production limits are sized as a
 starting point for two light Laravel projects on 4 vCPU/8 GB RAM; see the production
 guide for the budget and optional worker example.
@@ -216,5 +286,5 @@ Former shared-stack users must follow the [data migration procedure](docs/PRODUC
 before switching traffic. No existing data is moved or deleted automatically.
 
 PHP errors are visible in each project's `logs/php-error.log` in both environments.
-The legacy `dev/php.ini` override has been removed; edit project-owned `.docker`
+The legacy `dev/php.ini` override has been removed; edit the active project-owned `.docker/`
 configuration instead. See [PHP logging](PROJECT_GUIDE.md#php-error-logs) for details.

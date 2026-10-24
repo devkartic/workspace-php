@@ -12,6 +12,7 @@ services:
     read_only: true
     tmpfs: [/tmp]
     volumes:
+      - ${PROJECT_SOURCE}:/var/www/html:ro
       - ${PROJECT_SOURCE}/.env:/var/www/html/.env:ro
       - runtime_storage:/var/www/html/storage
       - runtime_bootstrap_cache:/var/www/html/bootstrap/cache

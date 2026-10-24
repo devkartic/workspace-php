@@ -6,6 +6,35 @@ import test_workspace
 class ProductionTests(test_workspace.WorkspaceTests):
     mode = 'production'
 
+    def test_database_and_redis_password_minimum_and_generator(self):
+        self.sync('alpha')
+        module = self.load_module()
+        app_env = self.root / 'projects/alpha/.env'
+        private_env = self.root / 'projects/alpha/.docker/infra.production.env'
+        generated = module.dotenv(private_env)['MARIADB_ROOT_PASSWORD']
+        self.assertRegex(generated, r'^[a-f0-9]{16}$')
+        for path, key in ((app_env, 'DB_PASSWORD'), (app_env, 'REDIS_PASSWORD'),
+                          (private_env, 'MARIADB_ROOT_PASSWORD')):
+            original = path.read_text()
+            previous = module.dotenv(path)[key]
+            for length in (15, 16, 32, 64):
+                with self.subTest(key=key, length=length):
+                    path.write_text(original.replace(f'{key}={previous}', f'{key}=' + 'a' * length))
+                    if length < 16:
+                        with self.assertRaisesRegex(ValueError, 'at least 16 characters'):
+                            module.project('alpha')
+                    else:
+                        module.project('alpha')
+            path.write_text(original)
+        for invalid in ('REPLACE_WITH_A_SECRET', 'CHANGE_THIS_PASSWORD', 'EXAMPLE_PASSWORD_VALUE',
+                        'invalid!password123', 'password with spaces'):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    module.secret(invalid, 'password')
+        existing = private_env.read_bytes()
+        self.sync('alpha')
+        self.assertEqual(private_env.read_bytes(), existing)
+
     def test_production_has_no_host_ports_and_immutable_source(self):
         self.sync()
         config = self.resolved('alpha')

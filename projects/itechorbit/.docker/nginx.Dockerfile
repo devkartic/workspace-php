@@ -1,6 +1,6 @@
 FROM nginx:stable-alpine AS base
-COPY .docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 FROM base AS development
+LABEL io.php-workspace.runtime=mounted-development
 FROM base AS production
-ARG DOCUMENT_ROOT=public
-COPY ${DOCUMENT_ROOT}/ /var/www/html/${DOCUMENT_ROOT}/
+LABEL io.php-workspace.runtime=mounted-production

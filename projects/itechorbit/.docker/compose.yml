@@ -13,8 +13,8 @@ services:
     <<: *runtime
     image: ${STACK_NAME}-php:${IMAGE_TAG:-current}
     build:
-      context: ${PROJECT_SOURCE}
-      dockerfile: .docker/Dockerfile
+      context: ${PROJECT_CONFIG}
+      dockerfile: Dockerfile
       target: ${BUILD_TARGET}
       args: {PHP_VERSION: "${WORKSPACE_PHP_VERSION}"}
     working_dir: /var/www/html
@@ -30,8 +30,8 @@ services:
     <<: *runtime
     image: ${STACK_NAME}-nginx:${IMAGE_TAG:-current}
     build:
-      context: ${PROJECT_SOURCE}
-      dockerfile: .docker/nginx.Dockerfile
+      context: ${PROJECT_CONFIG}
+      dockerfile: nginx.Dockerfile
       target: ${BUILD_TARGET}
       args: {DOCUMENT_ROOT: "${WORKSPACE_DOCUMENT_ROOT}"}
     environment:

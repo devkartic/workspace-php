@@ -29,6 +29,8 @@ class WorkspaceTests(unittest.TestCase):
         (self.root / 'docker/.env.production').write_text('COMPOSE_PROJECT_NAME=isolated-test\nPRODUCTION_PROJECTS=alpha beta\nACME_EMAIL=ops@example.com\n')
         for n, port in (('alpha', 8091), ('beta', 8092)):
             app = self.root / f'projects/{n}'
+            # Existing project contracts remain supported until explicit migration.
+            (app / '.docker').mkdir(parents=True)
             for directory in ('public', 'storage/app/public', 'bootstrap/cache'):
                 (app / directory).mkdir(parents=True, exist_ok=True)
             (app / 'public/index.php').write_text(f'<?php echo "{n}";')
@@ -305,7 +307,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue((source / '.env').read_text().startswith(original))
         self.assertEqual((source / 'index.php').read_text(), '<?php echo "keep";')
         self.assertTrue((self.root / 'projects/registered').is_symlink())
-        self.assertTrue((source / '.docker/Dockerfile').is_file())
+        self.assertTrue((self.root / 'docker/projects/registered/Dockerfile').is_file())
+        self.assertFalse((source / '.docker').exists())
 
     def test_failed_registration_restores_environment(self):
         if self.mode != 'development':
@@ -327,7 +330,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual((source / 'public/index.php').stat().st_mode & 0o777, 0o644)
         self.assertEqual((source / '.env').stat().st_mode & 0o777, 0o644)
         self.assertIn('WORKSPACE_DOMAIN_ALIASES=', (source / '.env.example').read_text())
-        self.assertTrue((source / '.docker/Dockerfile').is_file())
+        self.assertTrue((self.root / 'docker/projects/newapp/Dockerfile').is_file())
+        self.assertFalse((source / '.docker').exists())
 
     def test_invalid_registration_document_root_never_deletes_existing_environment(self):
         if self.mode != 'development':

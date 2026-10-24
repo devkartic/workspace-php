@@ -96,9 +96,9 @@ def relative(value):
 
 
 def secret(value, label):
-    require(bool(re.fullmatch(r'[A-Za-z0-9_-]{32,}', value))
+    require(bool(re.fullmatch(r'[A-Za-z0-9_-]{16,}', value))
             and not value.upper().startswith(('REPLACE_', 'CHANGE_', 'EXAMPLE_')),
-            f'{label}: generate a unique secret with openssl rand -hex 32')
+            f'{label}: use at least 16 characters; generate a unique secret with openssl rand -hex 8')
 
 
 def infra():
@@ -146,24 +146,137 @@ def write_new(path, content, created):
         created.append(path)
 
 
-def scaffold(source, created):
-    target = source / '.docker'
+def config_path(source, name):
+    settings = dotenv(source / '.env')
+    mode = settings.get('WORKSPACE_SOURCE_MODE', '')
+    require(mode in {'', 'mounted'}, 'WORKSPACE_SOURCE_MODE must be mounted when specified')
+    if mode == 'mounted':
+        local = source / '.docker'
+        require(not local.is_symlink(), 'Project Docker configuration cannot be a symlink')
+        return local
+    external = ROOT / 'docker/projects' / name
+    require(not external.is_symlink(), 'Project Docker configuration cannot be a symlink')
+    # A repository update may ship external templates before the operator migrates
+    # private infrastructure. Never replace an initialized database's root secret.
+    if ((source / f'.docker/infra.{MODE}.env').is_file()
+            and not (external / f'infra.{MODE}.env').exists()):
+        return source / '.docker'
+    if external.exists() or not (source / '.docker').exists():
+        return external
+    return source / '.docker'
+
+
+def mounted_source(source, config):
+    return (dotenv(source / '.env').get('WORKSPACE_SOURCE_MODE') == 'mounted'
+            or config != source / '.docker')
+
+
+def mounted_template(name, content):
+    """Convert the legacy build templates into source-independent runtime builds."""
+    if name == 'Dockerfile':
+        content = content.replace('COPY --chown=www-data:www-data . /var/www/html\n', '')
+        content = content.replace('.docker/', '')
+        content = content.replace('FROM base AS development',
+                                  'COPY prepare-runtime /usr/local/bin/prepare-runtime\nFROM base AS development\nLABEL io.php-workspace.runtime=mounted-development')
+        content = content.replace('FROM base AS production',
+                                  'FROM base AS production\nLABEL io.php-workspace.runtime=mounted-production')
+    elif name == 'nginx.Dockerfile':
+        content = content.replace('.docker/', '')
+        content = content.replace('ARG DOCUMENT_ROOT=public\nCOPY ${DOCUMENT_ROOT}/ /var/www/html/${DOCUMENT_ROOT}/\n', '')
+        content = content.replace('FROM base AS development', 'FROM base AS development\nLABEL io.php-workspace.runtime=mounted-development')
+        content = content.replace('FROM base AS production', 'FROM base AS production\nLABEL io.php-workspace.runtime=mounted-production')
+    elif name == 'compose.yml':
+        content = content.replace('context: ${PROJECT_SOURCE}', 'context: ${PROJECT_CONFIG}')
+        content = content.replace('dockerfile: .docker/', 'dockerfile: ')
+    elif name == 'compose.override.production.yml.example':
+        content = content.replace('    volumes:\n', '    volumes:\n      - ${PROJECT_SOURCE}:/var/www/html:ro\n')
+    elif name in {'Dockerfile.dockerignore', 'nginx.Dockerfile.dockerignore'}:
+        content = content.replace('.docker/', '')
+    return content
+
+
+def scaffold(source, created, name):
+    target = config_path(source, name)
+    mounted = mounted_source(source, target)
     for path in (ROOT / 'docker/templates').iterdir():
         if path.is_file():
             content = path.read_text()
-            if path.name in {'Dockerfile.dockerignore', 'nginx.Dockerfile.dockerignore'}:
+            if not mounted and path.name in {'Dockerfile.dockerignore', 'nginx.Dockerfile.dockerignore'}:
                 existing = source / '.dockerignore'
                 if existing.is_file():
                     content = existing.read_text() + '\n' + content
+            if mounted:
+                content = mounted_template(path.name, content)
             write_new(target / path.name, content, created)
-    write_new(target / 'compose.yml', (ROOT / 'docker/docker-compose.yml').read_text(), created)
+    content = (ROOT / 'docker/docker-compose.yml').read_text()
+    write_new(target / 'compose.yml', mounted_template('compose.yml', content) if mounted else content, created)
     defaults = dict(RESOURCE_DEFAULTS)
     if MODE == 'production':
         defaults['NGINX_MEMORY'] = '128m'
     content = ('# Private, project-only infrastructure. Never commit this file.\n'
-               f'MARIADB_ROOT_PASSWORD={secrets.token_hex(32)}\n'
+               f'MARIADB_ROOT_PASSWORD={secrets.token_hex(8)}\n'
                + ''.join(f'{key}={value}\n' for key, value in defaults.items()))
     write_new(target / f'infra.{MODE}.env', content, created)
+
+
+def migrate_config(n):
+    """Convert only recognized build contracts, preserving credentials and overrides."""
+    source = (ROOT / 'projects' / n).resolve()
+    old = source / '.docker'
+    target = ROOT / 'docker/projects' / n
+    require(not target.is_symlink(), 'Project Docker configuration cannot be a symlink')
+    if target.exists():
+        # Only an untouched shipped scaffold can be replaced. Active/custom
+        # external configuration must never be silently overwritten.
+        for path in target.iterdir():
+            baseline = ROOT / ('docker/docker-compose.yml' if path.name == 'compose.yml' else f'docker/templates/{path.name}')
+            require(path.is_file() and not path.is_symlink() and baseline.is_file()
+                    and path.read_text() == mounted_template(path.name, baseline.read_text()),
+                    f'{target} already exists with active or customized configuration; migration will not overwrite it')
+    require(old.is_dir() and not old.is_symlink(), f'Missing real legacy configuration directory: {old}')
+    project(n)  # Validate the existing registration without changing it.
+    for name in ('Dockerfile', 'nginx.Dockerfile', 'compose.yml'):
+        baseline = ROOT / ('docker/docker-compose.yml' if name == 'compose.yml' else f'docker/templates/{name}')
+        require((old / name).is_file() and (old / name).read_bytes() == baseline.read_bytes(),
+                f'{old / name}: customized or outdated build contract; merge it with the current legacy template before migration. '
+                'Save custom runtime instructions and reapply them to the external Dockerfile afterward; application COPY steps must be removed.')
+    require(not any(path.is_symlink() for path in old.rglob('*')), 'Migration does not follow configuration symlinks')
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    backup = ROOT / 'docker/backups/config' / n / stamp
+    shutil.copytree(old, backup)
+    backup.chmod(0o700)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f'.{n}-migration-', dir=target.parent))
+    external_backup = backup / 'external-scaffold'
+    try:
+        shutil.copytree(old, staging, dirs_exist_ok=True)
+        for name in ('Dockerfile', 'nginx.Dockerfile', 'compose.yml'):
+            (staging / name).write_text(mounted_template(name, (staging / name).read_text()))
+        shutil.copy2(ROOT / 'docker/templates/prepare-runtime', staging / 'prepare-runtime')
+        # Application ignore rules have no meaning for the runtime-only context.
+        for name in ('Dockerfile.dockerignore', 'nginx.Dockerfile.dockerignore'):
+            (staging / name).write_text(mounted_template(name, (ROOT / 'docker/templates' / name).read_text()))
+        example = 'compose.override.production.yml.example'
+        baseline = ROOT / 'docker/templates' / example
+        if (staging / example).is_file() and (staging / example).read_bytes() == baseline.read_bytes():
+            (staging / example).write_text(mounted_template(example, baseline.read_text()))
+        if target.exists():
+            os.replace(target, external_backup)
+        os.replace(staging, target)
+        try:
+            generate([n])  # Validation promotes generated files only after all checks pass.
+        except BaseException:
+            shutil.rmtree(target)
+            if external_backup.exists():
+                os.replace(external_backup, target)
+            raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+        if not target.exists() and external_backup.exists():
+            os.replace(external_backup, target)
+    print(f'Migrated configuration to {target}; backup: {backup}. Legacy .docker retained. '
+          f'Run make project-up ENV={MODE} NAME={n} to build runtime images and apply mounts.')
 
 
 def validate_log_paths(source):
@@ -182,9 +295,22 @@ def project(n, created=None):
     if MODE == 'production':
         require(n in project_names(), f'{n} is not selected in PRODUCTION_PROJECTS')
     _, prefix = infra()
-    source = (ROOT / 'projects' / n).resolve()
-    validate_log_paths(source)
-    app = dotenv(source / '.env')
+    project_dir = (ROOT / 'projects' / n).resolve()
+    validate_log_paths(project_dir)
+    workspace = dotenv(project_dir / '.env')
+    source_root = workspace.get('WORKSPACE_SOURCE_ROOT', '.')
+    require(source_root == '.' or relative(source_root), f'{n}: invalid WORKSPACE_SOURCE_ROOT')
+    source = (project_dir / source_root).resolve()
+    require(source.is_dir() and source.is_relative_to(project_dir), f'{n}: source root must exist inside the project')
+    if source_root != '.':
+        require(not any(not key.startswith('WORKSPACE_') for key in workspace),
+                f'{n}: parent .env must contain only WORKSPACE_* settings; move application values into {source_root}/.env')
+        application = dotenv(source / '.env')
+        require(not any(key.startswith('WORKSPACE_') for key in application),
+                f'{n}: application .env must not contain WORKSPACE_* settings')
+        app = {**application, **workspace}
+    else:
+        app = workspace
     require(app.get('WORKSPACE_PROJECT_NAME') == n, f'{n}: registration name must match projects/{n}')
     version = app.get('WORKSPACE_PHP_VERSION', '')
     require(version in PHP_VERSIONS[MODE], f'{n}: unsupported PHP version')
@@ -203,7 +329,10 @@ def project(n, created=None):
     require(app.get('DB_HOST', 'mariadb') == 'mariadb' and app.get('REDIS_HOST', 'redis') == 'redis', f'{n}: use project-local hosts mariadb and redis')
     require(app.get('DB_PORT', '3306') == '3306' and app.get('REDIS_PORT', '6379') == '6379', f'{n}: use internal database/cache ports')
     require(re.fullmatch(r'[A-Za-z0-9_-]+', password) and re.fullmatch(r'[A-Za-z0-9_-]+', redis_password), f'{n}: passwords must use A-Z, a-z, 0-9, _ or -')
-    writable = app.get('WORKSPACE_WRITABLE_PATHS', '').split()
+    config = config_path(project_dir, n)
+    mounted = mounted_source(project_dir, config)
+    default_writable = 'storage bootstrap/cache' if mounted and (source / 'artisan').is_file() and not app.get('WORKSPACE_STORAGE_VOLUME') else ''
+    writable = app.get('WORKSPACE_WRITABLE_PATHS', default_writable).split()
     for value in writable:
         require(relative(value), f'{n}: invalid writable directory')
         path = source / value
@@ -218,6 +347,11 @@ def project(n, created=None):
     if storage:
         require(all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', x) for x in (storage, cache)) and storage != cache, f'{n}: invalid external volume names')
         require(not any(a == 'storage' or a.startswith('storage/') or a == 'bootstrap/cache' or a.startswith('bootstrap/cache/') or 'bootstrap/cache'.startswith(a + '/') for a in writable), f'{n}: writable paths overlap external volumes')
+    if mounted and MODE == 'production' and (source / 'artisan').is_file():
+        require(storage or {'storage', 'bootstrap/cache'} <= set(writable),
+                f'{n}: Laravel needs WORKSPACE_WRITABLE_PATHS=storage bootstrap/cache or adopted runtime volumes')
+    if source_root != '.':
+        require(mounted or created is None, f'{n}: nested source requires external Docker configuration; run project-migrate-config first')
     if MODE == 'production':
         require(public != '.' and not any(source.joinpath(*Path(public).parts[:i]).is_symlink() for i in range(1, len(Path(public).parts) + 1)), f'{n}: require a dedicated public directory without symlink parents')
         require(app.get('APP_ENV') == 'production' and app.get('APP_DEBUG', '').lower() == 'false' and app.get('APP_URL') == f'https://{host}', f'{n}: set APP_ENV=production, APP_DEBUG=false and HTTPS APP_URL')
@@ -225,8 +359,8 @@ def project(n, created=None):
         secret(password, f'{n} DB_PASSWORD')
         secret(redis_password, f'{n} REDIS_PASSWORD')
     if created is not None:
-        scaffold(source, created)
-    private = dotenv(source / f'.docker/infra.{MODE}.env')
+        scaffold(project_dir, created, n)
+    private = dotenv(config / f'infra.{MODE}.env')
     secret(private.get('MARIADB_ROOT_PASSWORD', ''), f'{n} MARIADB_ROOT_PASSWORD')
     allowed_private = {'MARIADB_ROOT_PASSWORD', *RESOURCE_DEFAULTS}
     require(not set(private) - allowed_private, f'{n}: unsupported private infrastructure setting')
@@ -236,7 +370,7 @@ def project(n, created=None):
     require(re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', tag), f'{n}: invalid image tag')
     env = {**app, **private, 'DB_DATABASE': db, 'DB_USERNAME': user, 'DB_PASSWORD': password,
            'REDIS_PASSWORD': redis_password, 'STACK_NAME': stack, 'PROJECT_NAME': n,
-           'PROJECT_SOURCE': str(source), 'RUNTIME_PATH': str(runtime), 'IMAGE_TAG': tag,
+           'PROJECT_SOURCE': str(source), 'PROJECT_ROOT': str(project_dir), 'PROJECT_CONFIG': str(config), 'RUNTIME_PATH': str(runtime), 'IMAGE_TAG': tag,
            'BUILD_TARGET': MODE, 'FASTCGI_HTTPS': 'on' if MODE == 'production' else 'off',
            'WORKSPACE_DOCUMENT_ROOT': public}
     # Do not inherit Compose controls, profiles, or shell values over the project's settings.
@@ -245,16 +379,16 @@ def project(n, created=None):
     environment.update({key: value for key, value in env.items()
                         if key not in protected and not key.startswith(('DOCKER_', 'COMPOSE_'))})
     return {'name': n, 'source': source, 'app': app, 'env': environment, 'stack': stack,
-            'runtime': runtime, 'host': host, 'aliases': aliases, 'public': public, 'writable': writable}
+            'project_dir': project_dir, 'config': config, 'mounted': mounted, 'runtime': runtime, 'host': host, 'aliases': aliases, 'public': public, 'writable': writable}
 
 
 def compose_args(p, overlay=None, profiles=False):
-    source = p['source']
-    files = [source / '.docker/compose.yml', overlay or p['runtime'] / 'compose.json', source / '.docker/compose.override.yml']
-    optional = source / f'.docker/compose.override.{MODE}.yml'
+    source = p['project_dir']
+    files = [p['config'] / 'compose.yml', overlay or p['runtime'] / 'compose.json', p['config'] / 'compose.override.yml']
+    optional = p['config'] / f'compose.override.{MODE}.yml'
     if optional.is_file():
         files.append(optional)
-    cmd = ['docker', 'compose', '--project-directory', str(source), '--env-file', str(source / f'.docker/infra.{MODE}.env'), '-p', p['stack']]
+    cmd = ['docker', 'compose', '--project-directory', str(source), '--env-file', str(p['config'] / f'infra.{MODE}.env'), '-p', p['stack']]
     for path in files:
         cmd += ['-f', str(path)]
     if profiles:
@@ -276,7 +410,7 @@ def mount(source, target, readonly=False, kind='bind'):
 
 def overlay_config(p):
     source, app = p['source'], p['app']
-    services = {'php': {'volumes': [mount(source / 'logs', '/var/log/project')]}, 'nginx': {'volumes': []}}
+    services = {'php': {'volumes': [mount(p['project_dir'] / 'logs', '/var/log/project')]}, 'nginx': {'volumes': []}}
     volumes = {}
     if MODE == 'development':
         services['php']['volumes'].append(mount(source, '/var/www/html'))
@@ -287,7 +421,11 @@ def overlay_config(p):
             services['nginx']['ports'] = [f'127.0.0.1:{port}:80']
     else:
         services['php'].update(read_only=True, tmpfs=['/tmp', '/usr/local/var/run'])
-        services['php']['volumes'].append(mount(source / '.env', '/var/www/html/.env', True))
+        if p['mounted']:
+            services['php']['volumes'].append(mount(source, '/var/www/html', True))
+            services['nginx']['volumes'].append(mount(source, '/var/www/html', True))
+        else:
+            services['php']['volumes'].append(mount(source / '.env', '/var/www/html/.env', True))
     paths = {value: None for value in p['writable']}
     if app.get('WORKSPACE_STORAGE_VOLUME'):
         paths.update({'storage': app['WORKSPACE_STORAGE_VOLUME'], 'bootstrap/cache': app['WORKSPACE_CACHE_VOLUME']})
@@ -323,7 +461,7 @@ def check_isolation(p, resolved):
         for item in resolved.get(kind, {}).values():
             require(not item.get('external'), 'External secrets/configs are not project-isolated')
             if item.get('file'):
-                require(Path(item['file']).resolve().is_relative_to(p['source']), 'Secret/config files must belong to this project')
+                require(any(Path(item['file']).resolve().is_relative_to(root) for root in (p['project_dir'], p['config'])), 'Secret/config files must belong to this project')
     for n, service in resolved['services'].items():
         require(not any(service.get(k) for k in ('privileged', 'network_mode', 'pid', 'ipc', 'devices', 'cap_add', 'container_name', 'external_links', 'links', 'volumes_from', 'use_api_socket', 'uts')),
                 f'{n}: host/shared namespaces, devices and privileged settings are not supported')
@@ -336,19 +474,20 @@ def check_isolation(p, resolved):
         for v in service.get('volumes', []):
             if v['type'] == 'bind':
                 host = Path(v['source']).resolve()
-                require(host.is_relative_to(p['source']) or host.is_relative_to(p['runtime']), f'{n}: bind mounts must stay within this project')
+                require(any(host.is_relative_to(root) for root in (p['project_dir'], p['runtime'], p['config'])), f'{n}: bind mounts must stay within this project')
                 require(not str(host).endswith(('.sock', '/docker.sock')), f'{n}: host sockets cannot be mounted')
         if n in {'php', 'nginx'} or service.get('build'):
             require(service.get('image', '').startswith(p['stack'] + '-'), f'{n}: use a project-specific image tag')
             if service.get('build'):
-                require(Path(service['build']['context']).resolve() == p['source'], f'{n}: build context must be this project')
+                build_root = p['config'] if p['mounted'] else p['source']
+                require(Path(service['build']['context']).resolve() == build_root, f'{n}: build context must be this project configuration' if p['mounted'] else f'{n}: build context must be this project')
                 dockerfile = Path(service['build'].get('dockerfile', 'Dockerfile'))
-                require((p['source'] / dockerfile).resolve().is_relative_to(p['source']), f'{n}: Dockerfile must belong to this project')
+                require((build_root / dockerfile).resolve().is_relative_to(build_root), f'{n}: Dockerfile must belong to this project')
                 require(service['build'].get('network', 'default') in {'default', 'none'} and not service['build'].get('additional_contexts'),
                         f'{n}: host/shared build networks and extra contexts are not supported')
     logs = [v for v in resolved['services']['php'].get('volumes', []) if v['target'] == '/var/log/project']
     require(len(logs) == 1 and logs[0]['type'] == 'bind'
-            and Path(logs[0]['source']) == p['source'] / 'logs' and not logs[0].get('read_only'),
+            and Path(logs[0]['source']) == p['project_dir'] / 'logs' and not logs[0].get('read_only'),
             'PHP must mount its own project logs directory writable at /var/log/project')
     if MODE == 'production':
         require(resolved['services']['php'].get('read_only'), 'Production PHP must have a read-only filesystem')
@@ -356,9 +495,20 @@ def check_isolation(p, resolved):
             for v in service.get('volumes', []):
                 if v['type'] == 'bind':
                     log_mount = (n == 'php' and v['target'] == '/var/log/project'
-                                 and Path(v['source']) == p['source'] / 'logs')
+                                 and Path(v['source']) == p['project_dir'] / 'logs')
                     require(v.get('read_only') or log_mount, f'{n}: production host bind mounts must be read-only except PHP project logs')
-                    require(v['target'] != '/var/www/html', 'Production source must be baked into its image')
+                    if v['target'] == '/var/www/html':
+                        require(p['mounted'] and Path(v['source']).resolve() == p['source'] and v.get('read_only'),
+                                'Production source mount must be the registered read-only source')
+        if p['mounted']:
+            php_image = resolved['services']['php']['image']
+            app_services = [name for name, service in resolved['services'].items()
+                            if name in {'php', 'nginx'} or service.get('image') == php_image]
+            for name in app_services:
+                roots = [v for v in resolved['services'][name].get('volumes', []) if v['target'] == '/var/www/html']
+                require(len(roots) == 1 and roots[0]['type'] == 'bind' and roots[0].get('read_only')
+                        and Path(roots[0]['source']).resolve() == p['source'],
+                        f'{name}: mounted runtime services require ${{PROJECT_SOURCE}}:/var/www/html:ro; update worker overrides before migration')
 
 
 def sync(names):
@@ -551,10 +701,32 @@ def up(p):
     require(all(p['app'].get(key) == p['env'][key] for key in ('DB_USERNAME', 'DB_PASSWORD', 'REDIS_PASSWORD')),
             f"{p['name']}: configure explicit project database/Redis credentials in the application .env before startup")
     edge(p)
-    compose(p, 'build')
-    validate_log_paths(p['source'])
-    (p['source'] / 'logs').mkdir(exist_ok=True)
+    if not p['mounted']:
+        compose(p, 'build')
+    else:
+        resolved = json.loads(compose(p, 'config', '--format', 'json', capture=True).stdout)
+        missing = []
+        for name, service in resolved['services'].items():
+            if not service.get('build'):
+                continue
+            result = docker('image', 'inspect', service['image'], capture=True, check=False)
+            info = json.loads(result.stdout)[0] if result.returncode == 0 else None
+            if info is None or (name in {'php', 'nginx'} and
+                    (info['Config'].get('Labels') or {}).get('io.php-workspace.runtime') != f'mounted-{MODE}'):
+                missing.append(name)
+        if missing:
+            compose(p, 'build', *missing)
+    validate_log_paths(p['project_dir'])
+    (p['project_dir'] / 'logs').mkdir(exist_ok=True)
     compose(p, 'run', '--rm', '--no-deps', '--user', '0:0', '--entrypoint', 'sh', 'php', '/usr/local/bin/prepare-logs')
+    if p['mounted'] and MODE == 'production':
+        paths = list(p['writable'])
+        if p['app'].get('WORKSPACE_STORAGE_VOLUME'):
+            paths += ['storage', 'bootstrap/cache']
+        if paths:
+            compose(p, 'run', '--rm', '--no-deps', '--user', '0:0',
+                    '--volume', f"{p['source']}:/workspace-source:ro", '--entrypoint', 'sh',
+                    'php', '/usr/local/bin/prepare-runtime', *paths)
     compose(p, 'run', '--rm', '--no-deps', 'nginx', 'nginx', '-t')
     compose(p, 'up', '-d', '--wait', 'mariadb', 'redis')
     compose(p, 'run', '--rm', 'database-init')
@@ -566,9 +738,21 @@ def prepare_examples():
     require(MODE == 'development', 'Example bootstrapping is development-only')
     for example in sorted((ROOT / 'projects').glob('*/.env.example')):
         target = example.with_name('.env')
-        if not target.exists() and dotenv(example).get('WORKSPACE_PROJECT_NAME'):
+        if not target.exists():
+            if not dotenv(example).get('WORKSPACE_PROJECT_NAME'):
+                continue
             shutil.copyfile(example, target)
             target.chmod(0o644)  # Development examples contain no production credentials.
+        settings = dotenv(target)
+        source_root = settings.get('WORKSPACE_SOURCE_ROOT', '.')
+        require(source_root == '.' or relative(source_root), 'Invalid WORKSPACE_SOURCE_ROOT in example')
+        if source_root != '.':
+            app_dir = (target.parent / source_root).resolve()
+            require(app_dir.is_relative_to(target.parent.resolve()), 'Source root must stay inside project')
+            app_env = app_dir / '.env'
+            if not app_env.exists():
+                shutil.copyfile(app_dir / '.env.example', app_env)
+                app_env.chmod(0o600)
 
 
 def doctor():
@@ -614,12 +798,14 @@ def registration_settings(n, version, host, public, port):
 def register(args):
     """Register transactionally; existing application values and code remain intact."""
     require(MODE == 'development', 'Register in development mode; configure production settings separately')
-    require(5 <= len(args) <= 7, 'Usage: add NAME PROJECT_PATH PHP HOST DATABASE [DOCUMENT_ROOT] [HTTP_PORT]')
+    require(5 <= len(args) <= 8, 'Usage: add NAME PROJECT_PATH PHP HOST DATABASE [DOCUMENT_ROOT] [HTTP_PORT] [SOURCE_ROOT]')
     n, path, version, host, db = args[:5]
     version = version or DEFAULT_PHP_VERSION
     require(n != 'gateway', "Project name 'gateway' is reserved for the shared gateway")
     public = args[5] if len(args) > 5 and args[5] else '.'
     requested = args[6] if len(args) > 6 else ''
+    source_root = args[7] if len(args) > 7 and args[7] else '.'
+    require(source_root == '.' or relative(source_root), 'Use a relative SOURCE_ROOT such as src')
     require(valid_name(n) and valid_name(db), 'Project/database names must use lowercase letters, numbers, and underscores (maximum 32 characters)')
     require(version in PHP_VERSIONS['development'], 'Unsupported development PHP version')
     require(valid_host(host), 'Use a hostname without a scheme or port')
@@ -661,41 +847,57 @@ def register(args):
             source.chmod(0o755)
             created_dirs.append(source)
             current = source
-            for part in Path(public).parts:
+            for part in (Path(source_root) / public).parts:
                 current /= part
                 current.mkdir(mode=0o755)
                 current.chmod(0o755)
                 created_dirs.append(current)
         linked = False
         created = []
+        app_source = (source / source_root).resolve()
+        require(app_source.is_relative_to(source), 'Source root must stay inside the project')
         env_path = source / '.env'
         example = source / '.env.example'
         original = env_path.read_bytes() if env_path.exists() else None
         try:
-            require((source / public).is_dir(), f'Document root does not exist: {source / public}')
-            require((source / public).resolve().is_relative_to(source), 'Document root must stay inside the application')
+            require((app_source / public).is_dir(), f'Document root does not exist: {app_source / public}')
+            require((app_source / public).resolve().is_relative_to(app_source), 'Document root must stay inside the application')
             if source != alias.resolve():
                 require(not alias.exists() and not alias.is_symlink(), f'Project directory already exists: {alias}')
                 alias.symlink_to(source, target_is_directory=True)
                 linked = True
             template = Template((ROOT / 'docker/project.env.example').read_text()).safe_substitute(
                 PROJECT_NAME=n, HOSTNAME=host, DATABASE=db, DATABASE_USER=f'{n[:27]}_user')
-            base = original.decode() if original is not None else example.read_text() if example.exists() else template
+            base = original.decode() if original is not None else example.read_text() if example.exists() else template if source_root == '.' else ''
             values = parse_dotenv(base, str(env_path))
             require(not values.get('WORKSPACE_PROJECT_NAME'), f'Project already registered in {env_path}')
-            require(valid_name(values.get('DB_DATABASE', db)), 'Invalid existing DB_DATABASE')
+            if source_root != '.':
+                require(all(key.startswith('WORKSPACE_') for key in values), 'Parent .env must contain only WORKSPACE_* settings')
+                application_env = app_source / '.env'
+                if not application_env.exists():
+                    app_example = app_source / '.env.example'
+                    write_new(application_env, app_example.read_text() if app_example.exists() else template, created)
+                    application_env.chmod(0o600)
+                application_values = dotenv(application_env)
+                require(not any(key.startswith('WORKSPACE_') for key in application_values), 'Application .env must not contain WORKSPACE_* settings')
+                require(valid_name(application_values.get('DB_DATABASE', db)), 'Invalid existing DB_DATABASE')
+                write_new(app_source / '.env.example', template, created)
+            else:
+                require(valid_name(values.get('DB_DATABASE', db)), 'Invalid existing DB_DATABASE')
             block = registration_settings(n, version, host, public, requested)
+            if source_root != '.':
+                block += f'WORKSPACE_SOURCE_ROOT={source_root}\n'
             content = base + ('' if base.endswith('\n') else '\n')
-            if 'DB_DATABASE' not in values:
+            if source_root == '.' and 'DB_DATABASE' not in values:
                 content += f'DB_DATABASE={db}\n'
             env_path.write_text(content + block)
             if original is None:
                 env_path.chmod(0o644)  # New registrations use development-only credentials.
             if not example.exists():
-                write_new(example, template + block, created)
+                write_new(example, (template if source_root == '.' else '') + block, created)
                 example.chmod(0o644)
             if new_source:
-                starter = source / public / 'index.php'
+                starter = app_source / public / 'index.php'
                 write_new(starter, f'<?php\nheader("Content-Type: text/plain; charset=utf-8");\necho "{n} is running\\n";\necho "PHP version: " . PHP_VERSION . "\\n";\n', created)
                 starter.chmod(0o644)
             generate([n])  # The registration transaction already owns the generation lock.
@@ -792,7 +994,10 @@ def main():
         compose(p, *commands[action], profiles=False)
         return
     with lock(n):
-        if action in {'db-access-enable', 'db-access-disable', 'db-access-status'}:
+        if action == 'project-migrate-config':
+            with lock():
+                migrate_config(n)
+        elif action in {'db-access-enable', 'db-access-disable', 'db-access-status'}:
             p = project(n)
             if action == 'db-access-enable':
                 require((p['runtime'] / 'compose.json').is_file(), 'Start the project before enabling database access')
